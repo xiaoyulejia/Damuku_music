@@ -1,0 +1,24 @@
+{
+  "name": "damuku_music",
+  "version": "2.0.0",
+  "description": "Damuku_music B站直播弹幕点歌H5插件",
+  "main": "app.js",
+  "scripts": {
+    "start": "pm2 start ecosystem.config.js",
+    "stop": "pm2 stop Damuku_music",
+    "restart": "pm2 restart Damuku_music",
+    "log": "pm2 log Damuku_music"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "NeteaseCloudMusicApi": "^4.32.0",
+    "axios": "^1.6.8",
+    "express": "^5.1.0",
+    "yaml": "^2.8.1",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "pm2": "^7.0.1"
+  }
+}

@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Damuku_music</title>
+    <!-- 库文件 -->
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
+    <script src="https://cdn.bootcdn.net/ajax/libs/pako/2.0.3/pako.min.js"></script>
+    <!-- main -->
+    <script type="module" src="./main.js?v=20260810-1"></script>
+    <!-- 配置文件 -->
+    <script src="./webapi.js"></script>
+    <!-- 总体样式文件 -->
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260810-1">
+    <!-- 点歌面板样式 -->
+    <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
+    <!-- 设置面板样式 -->
+    <link rel="stylesheet" href="./styles/setting-page.css?v=20260809-16">
+    <style id="customOverlayStyle"></style>
+</head>
+
+<body>
+    <div class="main">
+        <!-- 顶层提示弹窗 -->
+        <div class="alertBox"></div>
+
+        <!-- 当前播放 -->
+        <section class="playerCard">
+            <div class="cardTitle">
+                <div>
+                    <span class="eyebrow">LIVE MUSIC</span>
+                    <h1>Damuku_music</h1>
+                </div>
+                <span id="playerStatus" class="statusPill">等待播放</span>
+            </div>
+            <div class="nowPlaying">
+                <div class="albumIcon" aria-hidden="true">♫</div>
+                <div class="nowMeta">
+                    <span class="nowLabel">正在播放</span>
+                    <strong id="nowSong">等待点歌...</strong>
+                    <span id="nowArtist">欢迎在弹幕中发送点歌指令</span>
+                    <span id="nowRequester" class="requester"></span>
+                </div>
+            </div>
+            <div class="progress">
+                <div class="progress_bar"><i class="dot"></i></div>
+            </div>
+            <div class="playerActions">
+                <button id="unlockAudioBtn" class="primaryAction">启用声音</button>
+                <button id="togglePlayBtn" class="actionBtn">播放</button>
+                <button id="nextSongBtn" class="actionBtn">下一首</button>
+                <button id="settingsBtn" class="actionBtn">设置</button>
+            </div>
+            <div id="volumeControl" class="volumeControl">
+                <span>音量</span>
+                <input id="volumeSlider" type="range" min="0" max="100" step="1" value="50">
+                <output id="volumeValue">50%</output>
+            </div>
+        </section>
+
+        <!-- 点歌队列 -->
+        <section class="queueCard">
+            <div class="queueHeader">
+                <div>
+                    <span class="eyebrow">REQUEST QUEUE</span>
+                    <h2>点歌队列</h2>
+                </div>
+                <span id="queueCount" class="queueCount">0 首</span>
+            </div>
+            <table class="orderTable">
+                <thead>
+                    <tr><th>歌曲</th><th>歌手</th><th>点歌人</th></tr>
+                </thead>
+                <tbody id="orderList"></tbody>
+            </table>
+            <div id="emptyQueue" class="emptyQueue">队列为空，等待下一首点歌</div>
+        </section>
+
+        <!-- 设置面板 -->
+        <div class="setting">
+            <div id="menu" class="setting_menu">
+                <button class="setting_btn">登录设置</button>
+                <button class="setting_btn">点歌设置</button>
+                <button class="setting_btn">弹幕设置</button>
+                <button class="setting_btn">显示设置</button>
+                <button class="setting_btn">关于</button>
+                <button id="upBtn">↑</button>
+            </div>
+            <div class="setting_body">
+                <div id="pages" class="setting_pages">
+                    <!-- 登录设置 -->
+                    <table class="setting_login_page">
+                        <tr>
+                            <td>音乐平台</td>
+                            <td>
+                                <select id="musicPlatformSelect">
+                                    <option value="wy">网易云音乐</option>
+                                    <option value="qq">QQ音乐</option>
+                                </select>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td colspan="3">
+                                <div class="login_container">
+                                    <div id="loginForm">
+                                        <!-- 网易云扫码登录 -->
+                                        <div class="qr_login">
+                                            <img id="qrImg">
+                                            <button id="qrButton">刷新二维码</button>
+                                        </div>
+                                        <!-- QQ音乐cookie登录 -->
+                                        <div class="ck_login">
+                                            <input id="qqNumber" type="text" placeholder="请输入QQ号">
+                                            <textarea id="ckText" placeholder="请输入cookie"></textarea>
+                                            <button id="ckButton">设置cookie</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                        <tr>
+                            <td>空闲歌单ID</td>
+                            <td><input type="text" id="songListId" autocomplete="off"></td>
+                            <td><button id="loadSongList">加载歌单</button></td>
+                        </tr>
+                        <tr>
+                            <td>历史空闲歌单</td>
+                            <td><select id="songListHistory" size="4"></select></td>
+                            <td><button id="selectSongList">选择歌单</button></td>
+                        </tr>
+                    </table>
+
+                    <!-- 点歌设置-->
+                    <table class="setting_order_page">
+                        <tbody>
+                            <tr class="input">
+                                <td>用户点歌数</td>
+                                <td><input type="number" id="userMaxOrder" autocomplete="off"></td>
+                            </tr>
+                            <tr class="input">
+                                <td>最大点歌数</td>
+                                <td><input type="number" id="globalMaxOrder" autocomplete="off"></td>
+                            </tr>
+                            <tr class="input">
+                                <td>最大歌曲时长</td>
+                                <td><input type="number" id="orderMaxDuration" autocomplete="off"></td>
+                            </tr>
+                            <tr class="input">
+                                <td>超时限播时长</td>
+                                <td><input type="number" id="overLimitSkip" autocomplete="off"></td>
+                            </tr>
+                            <tr class="select">
+                                <td>历史点歌用户</td>
+                                <td><select id="userHistory" size="4"></select></td>
+                                <td><button id="addUserBlack">加入黑名单</button></td>
+                            </tr>
+                            <tr class="select">
+                                <td>用户黑名单</td>
+                                <td>
+                                    <select id="userBlackList" size="4">
+                                    </select>
+                                </td>
+                                <td><button id="delUserBlack">移除黑名单</button></td>
+                            </tr>
+                            <tr class="select">
+                                <td>历史点歌歌曲</td>
+                                <td><select id="songHistory" size="4"></select></td>
+                                <td><button id="addSongBlack">加入黑名单</button></td>
+                            </tr>
+                            <tr class="select">
+                                <td>歌曲黑名单</td>
+                                <td>
+                                    <select id="songBlackList" size="4">
+                                    </select>
+                                </td>
+                                <td><button id="delSongBlack">移除黑名单</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- 弹幕设置 -->
+                    <table class="setting_danmu_page">
+                        <tbody>
+                            <tr>
+                                <td>直播平台</td>
+                                <td>
+                                    <select name="" id="danmuPlatformSelect">
+                                        <option value="bilibili">B站</option>
+                                        <option value="douying">抖音</option>
+                                        <option value="douyu">斗鱼</option>
+                                    </select>
+                                </td>
+                                <td><button id="danmuPlatformButton">切换/重连</button></td>
+                            </tr>
+                            <tr>
+                                <td>连接方式</td>
+                                <td colspan="2">B站普通直播弹幕（无需开放平台许可）</td>
+                            </tr>
+                            <tr>
+                                <td>参数说明</td>
+                                <td colspan="2">网址使用 <code>?roomid=房间号</code>；可追加 <code>&amp;token=弹幕token</code> 或 <code>&amp;debug=1</code></td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- 显示设置 -->
+                    <table class="setting_display_page">
+                        <tbody>
+                            <tr>
+                                <td>内置主题</td>
+                                <td colspan="2">
+                                    <select id="overlayTheme">
+                                        <option value="dark">深色主题</option>
+                                        <option value="light">白色主题</option>
+                                    </select>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>播放界面透明度</td>
+                                <td><input id="overlayOpacity" type="range" min="20" max="100" step="1"></td>
+                                <td><output id="overlayOpacityValue"></output></td>
+                            </tr>
+                            <tr>
+                                <td>背景模糊</td>
+                                <td><input id="overlayBlur" type="range" min="0" max="24" step="1"></td>
+                                <td><output id="overlayBlurValue"></output></td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" class="customCssCell">
+                                    <label for="customOverlayCss">自定义 CSS</label>
+                                    <textarea id="customOverlayCss" rows="8" spellcheck="false"
+                                        placeholder="例如：\n.playerCard { border-radius: 8px; }"></textarea>
+                                    <p class="setting_tip">可使用 .playerCard（当前播放）、.queueCard（点歌队列）、.playerActions（按钮）、.alertBox .text（提示框）进行修改。填写 CSS 后点击“应用 CSS”，配置会全局保存。</p>
+                                    <div class="customCssActions">
+                                        <button id="applyCustomCss" type="button">应用 CSS</button>
+                                        <button id="clearCustomCss" type="button">清空 CSS</button>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" class="liveModeSectionTitle">直播模式显示内容</td>
+                            </tr>
+                            <tr>
+                                <td>当前播放卡片</td>
+                                <td colspan="2"><label class="setting_check"><input id="liveShowPlayer" type="checkbox">直播模式显示</label></td>
+                            </tr>
+                            <tr>
+                                <td>播放控制按钮</td>
+                                <td colspan="2"><label class="setting_check"><input id="liveShowControls" type="checkbox">直播模式显示</label></td>
+                            </tr>
+                            <tr>
+                                <td>队列标题和数量</td>
+                                <td colspan="2"><label class="setting_check"><input id="liveShowQueueHeader" type="checkbox">直播模式显示</label></td>
+                            </tr>
+                            <tr>
+                                <td>点歌人</td>
+                                <td colspan="2"><label class="setting_check"><input id="liveShowRequester" type="checkbox">队列中显示</label></td>
+                            </tr>
+                            <tr>
+                                <td>提示消息</td>
+                                <td colspan="2"><label class="setting_check"><input id="liveShowAlerts" type="checkbox">直播模式显示</label></td>
+                            </tr>
+                            <tr>
+                                <td colspan="3" class="setting_tip">
+                                    观众链接默认使用直播模式：<code>?roomid=房间号&amp;livemode=true</code>；自己查看完整界面时使用 <code>&amp;livemode=false</code>。这些显示配置是全局保存的。
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+
+                    <!-- 关于 -->
+                    <div class="setting_about_page">
+                        <p><strong>Damuku_music</strong></p>
+                        <p>为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐</p>
+                        <p>版本：v1.0.0</p>
+                        <hr>
+                        <p>开源地址：<a href="https://github.com/xiaoan-1/bilibili-ordersong-plugin" target="_blank">GitHub</a></p>
+                        <p>开源地址：<a href="https://gitcode.com/xiao-an/bilibili-ordersong-plugin.git" target="_blank">GitCode</a></p>
+                        <p>作者主页：<a href="https://order.xiaoan.website" target="_blank">xiaoan.website</a></p>
+                        <p>公益链接：<a href="https://order.xiaoan.website?roomid={直播间号}" target="_blank">在线使用</a>（填写直播间号即可）</p>
+                        <hr>
+                    </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+</body>
+
+</html>

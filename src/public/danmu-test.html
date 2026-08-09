@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>B站弹幕预加载轮询测试</title>
+    <style>
+        body { font: 14px system-ui, sans-serif; max-width: 1000px; margin: 24px auto; padding: 0 16px; color: #222; }
+        button, input { font: inherit; padding: 6px 10px; }
+        button { cursor: pointer; }
+        .status { margin: 14px 0; padding: 10px; background: #f3f5f7; border-radius: 6px; white-space: pre-wrap; }
+        table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background: #f5f5f5; }
+        .new { background: #e8fff0; }
+        .error { color: #b42318; }
+        code { word-break: break-all; }
+    </style>
+</head>
+<body>
+    <h1>B站弹幕预加载轮询测试</h1>
+    <p>该页面每 3 秒请求一次 <code>/live/danmu-history</code>，仅用于测试历史/预加载接口，不连接实时 WebSocket，也不会触发点歌。</p>
+    <p>
+        <label>房间号：<input id="roomId" type="text"></label>
+        <button id="start">开始轮询</button>
+        <button id="stop">停止</button>
+    </p>
+    <div id="status" class="status">等待开始</div>
+    <table>
+        <thead><tr><th>时间</th><th>UID</th><th>用户名</th><th>弹幕</th><th>ID</th></tr></thead>
+        <tbody id="messages"></tbody>
+    </table>
+
+    <script>
+        const config = window.location;
+        const params = new URLSearchParams(config.search);
+        const roomInput = document.getElementById('roomId');
+        const status = document.getElementById('status');
+        const messages = document.getElementById('messages');
+        const seen = new Set();
+        let timer = null;
+        let requestCount = 0;
+        let lastRequest = '';
+
+        roomInput.value = params.get('roomid') || params.get('room_id') || '';
+
+        function keyOf(item) {
+            return item.id_str || [item.uid, item.timeline, item.text].join('|');
+        }
+
+        function render(items, freshKeys) {
+            messages.innerHTML = '';
+            for (const item of items) {
+                const row = document.createElement('tr');
+                if (freshKeys.has(keyOf(item))) row.className = 'new';
+                const userName = item.user?.base?.name || item.uname || item.nickname || '用户';
+                for (const value of [item.timeline || '-', item.uid || item.user?.uid || 0, userName, item.text || '', item.id_str || '-']) {
+                    const cell = document.createElement('td');
+                    cell.textContent = value;
+                    row.appendChild(cell);
+                }
+                messages.appendChild(row);
+            }
+        }
+
+        async function poll() {
+            const roomId = roomInput.value.trim();
+            if (!/^\d+$/.test(roomId) || Number(roomId) <= 0) {
+                status.textContent = '请输入有效房间号';
+                status.className = 'status error';
+                return;
+            }
+            requestCount++;
+            lastRequest = new Date().toLocaleTimeString();
+            const api = `${config.pathname.replace(/\/danmu-test\.html$/, '')}/bili-api/live/danmu-history?room_id=${encodeURIComponent(roomId)}`;
+            try {
+                const response = await fetch(api, { cache: 'no-store' });
+                const result = await response.json();
+                if (result.code !== 0) throw new Error(result.message || `HTTP ${response.status}`);
+                const items = result.data?.room || [];
+                const fresh = items.filter(item => !seen.has(keyOf(item)));
+                const freshKeys = new Set(fresh.map(keyOf));
+                items.forEach(item => seen.add(keyOf(item)));
+                render(items, freshKeys);
+                status.className = 'status';
+                status.textContent = `房间号：${roomId}\n请求次数：${requestCount}\n最后请求：${lastRequest}\n本次返回：${items.length} 条\n本次新增：${fresh.length} 条\n接口：${api}`;
+                console.log('[DanmuTest] poll', { requestCount, roomId, count: items.length, fresh, result });
+            } catch (error) {
+                status.className = 'status error';
+                status.textContent = `请求失败：${error.message}\n请求地址：${api}`;
+                console.error('[DanmuTest] poll failed', error);
+            }
+        }
+
+        function start() {
+            stop();
+            poll();
+            timer = setInterval(poll, 3000);
+        }
+
+        function stop() {
+            if (timer) clearInterval(timer);
+            timer = null;
+        }
+
+        document.getElementById('start').onclick = start;
+        document.getElementById('stop').onclick = stop;
+        if (roomInput.value) start();
+    </script>
+</body>
+</html>

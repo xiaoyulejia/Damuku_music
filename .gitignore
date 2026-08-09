@@ -1,0 +1,9 @@
+/node_modules
+/.vscode
+*.txt
+/pnpm-lock.yaml
+/config/config.yaml
+/config/webapi.js
+/src/public/webapi.js
+/logs
+/api_reference

@@ -1,0 +1,474 @@
+/* 配置页面样式 */
+.setting{
+    width: min(420px, calc(100vw - 24px));
+    height: 0px;
+    padding: 0px;
+    margin: 0px;
+    color: #ffffff;
+    backdrop-filter: blur(2px) brightness(90%);
+    background-color: rgba(126, 126, 126, 0.5);
+    border-radius: 10px;
+    box-shadow: 0 0 20px rgb(114, 114, 114);
+    overflow: hidden;
+    /* 居中 */
+    position: absolute;
+    top: 0px;
+    left: 50%;
+    transform: translate(-50%, 0);
+    z-index: 3;
+    transition: .5s;
+}
+
+/* 设置页面导航菜单栏 */
+.setting_menu{
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+/* 导航栏按钮 */
+.setting_btn{
+    margin: 7px;
+    height: 30px;
+    color: #ffffff;
+    flex: 1;
+    border: 0px;
+    border-radius: 7px;
+    background: transparent;
+    transition: .5s;
+}
+
+.setting_btn:hover{
+    background-color: gray;
+    box-shadow: 0px 0px 7px rgb(0, 0, 0);
+}
+
+/* 上拉按钮 */
+#upBtn{
+    margin-right: 20px;
+    height: 20px;
+    color: #ffffff;
+    border: 1px solid white;
+    border-radius: 4px;
+    box-shadow: 0px 0px 5px white;
+    background: transparent;
+}
+
+.setting_body{
+    width: 100%;
+    height: calc(100% - 30px);
+    overflow-x: hidden;
+    overflow-y: scroll;
+}
+
+.setting_pages{
+    width: 100%;
+    left: 0px;
+    display: flex;
+    position: relative;
+    transition: .5s;
+}
+
+.setting_pages > *{
+    min-width: 100%;
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 100%;
+    height: 100%;
+}
+
+/* 表格样式 */
+.setting table{
+    width: 100%;
+    border-spacing: 20px 20px;
+    table-layout: fixed;
+}
+
+/* 表格行第一列元素 */
+.setting table tr td:nth-child(1){
+    width: auto;
+    font-weight: 500;
+    text-align: justify-all;
+    text-align-last: justify;
+}
+
+/* 表格行第二列元素 */
+.setting table tr td:nth-child(2){
+    width: 200px;
+    padding: 0px;
+    text-align: center;
+}
+
+/* 表格行第三列元素 */
+.setting table tr td:nth-child(3){
+    width: auto;
+    text-align: center;
+}
+
+.setting table tr td input{
+    width: 90%;
+    box-sizing: border-box;
+    padding: 3px;
+    margin: 0px;
+    outline: none; 
+    border: 1px solid grey;
+    border-radius: 5px;
+    font-size: large;
+    text-align: center;
+    background: rgb(187, 187, 187);
+    transition: .5s;
+}
+
+.setting table tr td input:hover{
+    width: 100%;
+    box-shadow: 0px 0px 10px white;
+    background: white;
+}
+
+/* 选择框样式 */
+.setting table tr td select{
+    width: 100%;
+    padding: 3px;
+    border: 1px solid grey;
+    border-radius: 3px;
+    text-align: center;
+    font-size: large;
+    color: white;
+    outline: none;
+    overflow: auto;
+    background: rgb(187, 187, 187);
+    transition: .5s;
+}
+
+.setting table tr td select option:checked{
+    box-shadow: 0px 0px 10px black;
+}
+
+.setting table tr td select:hover{
+    box-shadow: 0px 0px 20px black;
+}
+
+.setting table button{
+    border: 0px;
+    padding: 7px;
+    width: 100px;
+    outline: none;
+    background: rgb(255, 253, 253);
+    border-radius: 5px;
+    transition: .5s;
+}
+.setting table button:hover{
+    background: rgb(151, 151, 150);
+    box-shadow: 1px 1px 10px rgb(0, 0, 0);
+}
+
+.setting table ul{
+    width: 80%;
+    height: 200px;
+    margin: 0px auto;
+    padding: 0px;
+    overflow: scroll;
+    outline: none;
+    border: 1px solid black;
+    border-radius: 7px;
+    text-align: left;
+    text-align-last: left;
+    position: relative;
+}
+
+.setting table ul li{
+    width: 100%;
+    list-style-type: none;
+    transition: .5s;
+}
+
+/* -------------- 登录设置页样式 ------------ */
+.login_container {
+    width: 100%;
+    max-width: 400px;
+    margin: 0 auto;
+    overflow: hidden;
+}
+
+#loginForm {
+    width: 2000px;
+    padding: 5px;
+    display: flex;
+    position: relative;
+    left: 0px;
+    transition: .5s;
+}
+
+/* 网易二维码登录 */
+#loginForm .qr_login {
+    width: 400px;
+    /* 垂直布局，垂直居中 */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* 二维码 */
+#loginForm .qr_login #qrImg {
+    width: 150px;
+    height: 150px;
+    border: 0px;
+    border-radius: 5px;
+    box-shadow: 0px 0px 20px black;
+    background: transparent;
+    z-index: 4;
+    transition: .5s;
+}
+
+#loginForm .qr_login #qrImg:hover {
+    box-shadow: 0px 0px 20px white;
+}
+
+#loginForm .qr_login #qrButton {
+    margin: 0 auto;
+    margin-top: 10px;
+}
+
+/* qq Cookie登录 */
+#loginForm .ck_login{
+    width: 400px;
+    border-radius: 5px;
+    /* 垂直布局，垂直居中 */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+#loginForm .ck_login #ckText{
+    width: 300px;
+    height: 100%;
+    margin: 5px;
+    text-align-last: left;
+}
+
+/* -------------- 点歌设置页样式 ------------ */
+.setting_order_page #userBlackList,
+#songBlackList {
+    height: 105px;
+    background: rgb(16, 20, 16);
+    transition: .5s;
+}
+
+/* 独立全局设置页样式 */
+.settingsOnly .setting {
+    display: flex;
+    flex-direction: column;
+    color: #f4f3ff;
+    background: linear-gradient(145deg, rgba(34, 37, 62, .98), rgba(16, 18, 32, .98));
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 20px;
+    overflow: hidden;
+}
+
+.settingsOnly .setting_menu {
+    flex: 0 0 auto;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 14px 14px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, .1);
+    background: rgba(255, 255, 255, .035);
+}
+
+.settingsOnly .setting_btn {
+    height: 36px;
+    margin: 0;
+    padding: 0 10px;
+    color: #bdbed8;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.settingsOnly .setting_btn:hover {
+    color: #fff;
+    border-color: rgba(163, 146, 255, .45);
+    background: rgba(125, 105, 255, .2);
+    box-shadow: none;
+}
+
+.settingsOnly #upBtn {
+    display: none;
+}
+
+.settingsOnly .setting_body {
+    flex: 1 1 auto;
+    width: 100%;
+    height: auto;
+    padding: 0 0 22px;
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+.settingsOnly .setting_pages {
+    align-items: flex-start;
+}
+
+.settingsOnly .setting_pages > * {
+    height: auto;
+    padding: 8px 14px 24px;
+}
+
+.settingsOnly .setting table {
+    border-spacing: 0 10px;
+    border-collapse: separate;
+}
+
+.settingsOnly .setting table tr {
+    background: rgba(255, 255, 255, .055);
+}
+
+.settingsOnly .setting table tr td {
+    padding: 13px 12px;
+    color: #d8d8e8;
+    font-size: 13px;
+    text-align: left;
+    vertical-align: middle;
+}
+
+.settingsOnly .setting table tr td:first-child {
+    width: 34%;
+    border-radius: 12px 0 0 12px;
+    color: #aeb0c8;
+    font-size: 12px;
+    text-align: left;
+    text-align-last: left;
+}
+
+.settingsOnly .setting table tr td:nth-child(2) {
+    width: 42%;
+    text-align: left;
+}
+
+.settingsOnly .setting table tr td:last-child {
+    border-radius: 0 12px 12px 0;
+}
+
+.settingsOnly .setting table tr td input:not([type="range"]),
+.settingsOnly .setting table tr td select {
+    width: 100%;
+    min-height: 34px;
+    padding: 7px 9px;
+    color: #f0efff;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 8px;
+    background: rgba(9, 10, 20, .45);
+    font-size: 13px;
+    text-align: left;
+}
+
+.settingsOnly .setting table tr td input:not([type="range"]):focus,
+.settingsOnly .setting table tr td select:focus,
+.settingsOnly .setting table tr td textarea:focus {
+    border-color: #9888ff;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(152, 136, 255, .14);
+}
+
+.settingsOnly .setting table button {
+    width: auto;
+    min-width: 86px;
+    padding: 8px 12px;
+    color: #f8f7ff;
+    border: 1px solid rgba(255, 255, 255, .14);
+    background: rgba(125, 105, 255, .22);
+    white-space: nowrap;
+}
+
+.settingsOnly .setting table button:hover {
+    background: rgba(145, 126, 255, .42);
+    box-shadow: none;
+}
+
+.settingsOnly .setting_display_page input[type="range"] {
+    width: 100%;
+    height: 5px;
+    padding: 0;
+    accent-color: #9a87ff;
+    background: rgba(255, 255, 255, .15);
+}
+
+.settingsOnly .setting_display_page output {
+    display: inline-block;
+    min-width: 44px;
+    color: #cfc8ff;
+    font-size: 12px;
+    text-align: right;
+}
+
+.settingsOnly .setting_tip {
+    color: #8d8ea8 !important;
+    font-size: 12px !important;
+    line-height: 1.7;
+}
+
+.settingsOnly .customCssCell {
+    padding: 16px !important;
+}
+
+.settingsOnly .customCssCell label {
+    display: block;
+    margin-bottom: 9px;
+    color: #e7e5ff;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.settingsOnly .customCssCell textarea {
+    display: block;
+    width: 100%;
+    min-height: 150px;
+    padding: 12px;
+    resize: vertical;
+    color: #e4e2ff;
+    border: 1px solid rgba(255, 255, 255, .14);
+    border-radius: 10px;
+    outline: none;
+    background: rgba(8, 9, 18, .62);
+    font-family: Consolas, "Microsoft YaHei", monospace;
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+.settingsOnly .customCssCell textarea:focus {
+    border-color: #9888ff;
+    box-shadow: 0 0 0 3px rgba(152, 136, 255, .14);
+}
+
+.settingsOnly .customCssCell .setting_tip {
+    margin: 9px 0 0;
+}
+
+.settingsOnly .customCssActions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.settingsOnly .customCssActions button {
+    min-width: 96px;
+}
+
+.settingsOnly .setting_about_page {
+    margin: 8px 2px;
+    padding: 22px;
+    color: #bfc0d5;
+    border: 1px solid rgba(255, 255, 255, .1);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, .045);
+    line-height: 1.8;
+}
+
+.settingsOnly .setting_about_page strong {
+    color: #fff;
+    font-size: 18px;
+}
+
+.settingsOnly .setting_about_page a {
+    color: #b9aaff;
+}
