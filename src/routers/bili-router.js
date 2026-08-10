@@ -29,6 +29,7 @@ const router = express.Router();
 const sharedOrderStates = new Map();
 const sharedOrderCommands = new Map();
 let sharedOrderCommandSeq = 0;
+const SYNC_PUBLISHER_LEASE_MS = 5000;
 const sharedSyncDir = path.join(__dirname, '../../logs/order-sync');
 fs.mkdirSync(sharedSyncDir, { recursive: true });
 
@@ -79,6 +80,20 @@ router.post('/live/sync-state', (req, res) => {
     const current = readSyncFile(filePath, sharedOrderStates.get(roomId) || null);
     const incomingUpdatedAt = Number(state.updatedAt) || Date.now();
     const currentUpdatedAt = Number(current?.updatedAt) || 0;
+    const incomingPublisherId = String(state.publisherId || '');
+    const currentPublisherId = String(current?.publisherId || '');
+    const currentHeartbeatAt = Number(current?.publisherHeartbeatAt || currentUpdatedAt);
+    const publisherLeaseActive = current && currentPublisherId &&
+        Date.now() - currentHeartbeatAt < SYNC_PUBLISHER_LEASE_MS;
+
+    // 一个房间只允许当前 OBS 播放页发布状态，避免旧 OBS 页或另一个普通播放页
+    // 在切歌期间把控制页覆盖回另一首歌。发布者停止心跳后，新的页面才能接管。
+    if (publisherLeaseActive && incomingPublisherId !== currentPublisherId) {
+        return res.json({ code: 0, data: current, ignored: true, reason: 'publisher-locked' });
+    }
+    if (publisherLeaseActive && currentPublisherId && !incomingPublisherId) {
+        return res.json({ code: 0, data: current, ignored: true, reason: 'publisher-required' });
+    }
     if (current && currentUpdatedAt > incomingUpdatedAt) {
         return res.json({ code: 0, data: current, ignored: true });
     }
@@ -87,6 +102,10 @@ router.post('/live/sync-state', (req, res) => {
     const nextState = {
         ...state,
         settings: state.settings || current?.settings || null,
+        publisherId: incomingPublisherId || (publisherLeaseActive ? currentPublisherId : null),
+        publisherStartedAt: Number(state.publisherStartedAt) ||
+            (publisherLeaseActive ? Number(current?.publisherStartedAt) || incomingUpdatedAt : incomingUpdatedAt),
+        publisherHeartbeatAt: Date.now(),
         updatedAt: incomingUpdatedAt
     };
     writeSyncFile(filePath, nextState);

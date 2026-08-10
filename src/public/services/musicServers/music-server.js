@@ -1,5 +1,5 @@
-import wyMusicServer from "./wy-music-server.js?v=20260810-8";
-import qqMusicServer from "./qq-music-server.js?v=20260810-8";
+import wyMusicServer from "./wy-music-server.js?v=20260810-13";
+import qqMusicServer from "./qq-music-server.js?v=20260810-13";
 
 class MusicServer {
 

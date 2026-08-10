@@ -1,6 +1,6 @@
-import orderConfiger from "./order-configer.js?v=20260810-8";
-import publicMethod from "../utils/common.js?v=20260810-8";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-8";
+import orderConfiger from "./order-configer.js?v=20260810-25";
+import publicMethod from "../utils/common.js?v=20260810-25";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-25";
 
 /**
  * 音乐播放器
@@ -49,11 +49,18 @@ class MusicPlayer {
     lastCommandId = 0;
     handledCommandIds = new Set();
     volumePercent = 50;
+    publisherId = '';
+    publisherStartedAt = Date.now();
+    acceptedPublisherId = '';
 
     constructor() {
         this.isMirrorMode = !this.getPageLiveMode();
         const roomId = this.getPageRoomId() || 'default';
         this.stateStorageKey = `bilibiliOrdersongSharedState:${roomId}`;
+        if (!this.isMirrorMode) {
+            this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            this.publisherStartedAt = Date.now();
+        }
         this.volumePercent = Number(localStorage.getItem('playerVolume') || 50);
         this.applyVolume(this.volumePercent);
         this.initStateSync();
@@ -75,7 +82,7 @@ class MusicPlayer {
     getPageLiveMode() {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         const params = new URLSearchParams(query);
-        if (params.get('settings') === '1') return true;
+        if (params.get('settings') === '1') return false;
         return !['0', 'false', 'no', 'off'].includes((params.get('livemode') || 'true').toLowerCase());
     }
 
@@ -109,7 +116,7 @@ class MusicPlayer {
     requestSharedState() {
         try {
             const state = JSON.parse(localStorage.getItem(this.stateStorageKey) || 'null');
-            if (state) this.applySharedState(state);
+            if (state && this.acceptSharedPublisher(state)) this.applySharedState(state);
         } catch (_) { }
         this.stateChannel?.postMessage({ type: 'request-state' });
         this.pullSharedState();
@@ -126,7 +133,9 @@ class MusicPlayer {
                 cache: 'no-store'
             });
             const result = await response.json();
-            if (result.code === 0 && result.data) this.applySharedState(result.data);
+            if (result.code === 0 && result.data && this.acceptSharedPublisher(result.data)) {
+                this.applySharedState(result.data);
+            }
         } catch (_) {
             // 服务器端点不可用时，仍保留同浏览器内的 BroadcastChannel/localStorage 同步。
         } finally {
@@ -137,6 +146,7 @@ class MusicPlayer {
     handleStateMessage(message) {
         if (!message) return;
         if (message.type === 'state' && this.isMirrorMode) {
+            if (!this.acceptSharedPublisher(message.state)) return;
             this.applySharedState(message.state);
         } else if (message.type === 'request-state' && !this.isMirrorMode) {
             this.publishState();
@@ -189,6 +199,8 @@ class MusicPlayer {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
                 login: window.__loginSettingsState || window.__lastSharedSettings?.login || null
             },
+            publisherId: this.publisherId,
+            publisherStartedAt: this.publisherStartedAt,
             updatedAt: Date.now()
         };
         try { localStorage.setItem(this.stateStorageKey, JSON.stringify(state)); } catch (_) { }
@@ -274,6 +286,13 @@ class MusicPlayer {
         this.stateChannel?.postMessage(message);
         this.pushSharedCommand(message);
         if (!this.stateChannel && !window.API_CONFIG?.bili_api) publicMethod.pageAlert('未连接到 OBS 播放页面');
+    }
+
+    acceptSharedPublisher(state) {
+        const publisherId = String(state?.publisherId || '');
+        if (!publisherId) return !this.acceptedPublisherId;
+        if (!this.acceptedPublisherId) this.acceptedPublisherId = publisherId;
+        return this.acceptedPublisherId === publisherId;
     }
 
     applySharedState(state) {

@@ -1,4 +1,4 @@
-import BilibiliServer from "./bilibili-server.js?v=20260810-8";
+import BilibiliServer from "./bilibili-server.js?v=20260810-13";
 
 /**
  * 弹幕服务器

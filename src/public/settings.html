@@ -18,7 +18,12 @@
 </head>
 
 <body>
-    <iframe id="settingsFrame" title="点歌台设置" src="./?settings=1"></iframe>
+    <iframe id="settingsFrame" title="点歌台设置"></iframe>
+    <script>
+        const frameQuery = new URLSearchParams(window.location.search);
+        frameQuery.set('settings', '1');
+        document.getElementById('settingsFrame').src = `./?${frameQuery.toString()}`;
+    </script>
 </body>
 
 </html>

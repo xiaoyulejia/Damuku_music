@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260810-8";
-import publicMethod from "../utils/common.js?v=20260810-8";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-8";
+import musicPlayer from "./music-player.js?v=20260810-25";
+import publicMethod from "../utils/common.js?v=20260810-25";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-25";
 
 function readArray(key) {
     try {
@@ -72,12 +72,12 @@ class LoginConfiger {
 
         // 选择历史歌单ID
         document.getElementById('selectSongList').onclick = () => {
-            let selectIndex = this.elem_songListHistory.selectedIndex;
-            if (selectIndex < 0) {
+            const listId = this.elem_songListHistory.value || this.elem_songListHistory.options?.[0]?.value;
+            if (!listId) {
                 publicMethod.pageAlert("未选择歌单！");
                 return;
             }
-            this.loadSongList(this.elem_songListHistory[selectIndex].value);
+            this.loadSongList(listId);
         };
         document.getElementById('deleteSongListHistory').onclick = () => this.deleteSongListHistory();
         document.getElementById('clearSongListHistory').onclick = () => this.clearSongListHistory();

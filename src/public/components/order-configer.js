@@ -1,4 +1,4 @@
-import publicMethod from "../utils/common.js?v=20260810-8";
+import publicMethod from "../utils/common.js?v=20260810-25";
 
 function readArray(key) {
     try {

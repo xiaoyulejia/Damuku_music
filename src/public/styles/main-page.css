@@ -228,6 +228,11 @@ body.liveMode:not(.liveShowControls) .playerActions {
     display: none;
 }
 
+/* 直播/OBS页面使用独立设置页，不在顶部播放卡片中显示设置入口。 */
+body.liveMode #settingsBtn {
+    display: none;
+}
+
 body.liveMode:not(.liveShowQueueHeader) .queueHeader {
     display: none;
 }

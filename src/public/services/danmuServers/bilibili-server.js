@@ -1,4 +1,4 @@
-import publicMethod from "../../utils/common.js?v=20260810-8";
+import publicMethod from "../../utils/common.js?v=20260810-13";
 
 /** 使用普通B站直播协议接收弹幕，不再调用直播开放平台 gameStart。 */
 export default class BilibiliServer {
