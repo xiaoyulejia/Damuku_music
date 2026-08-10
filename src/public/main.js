@@ -1,8 +1,8 @@
-import musicPlayer from './components/music-player.js?v=20260810-4';
-import orderConfiger from './components/order-configer.js?v=20260810-4';
-import loginConfiger from './components/login-configer.js?v=20260810-4'
-import danmuConfiger from './components/danmu-configer.js?v=20260810-4';
-import publicMethod from './utils/common.js?v=20260810-4';
+import musicPlayer from './components/music-player.js?v=20260810-8';
+import orderConfiger from './components/order-configer.js?v=20260810-8';
+import loginConfiger from './components/login-configer.js?v=20260810-8'
+import danmuConfiger from './components/danmu-configer.js?v=20260810-8';
+import publicMethod from './utils/common.js?v=20260810-8';
 
 window.onload = function () {
 

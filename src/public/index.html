@@ -10,7 +10,7 @@
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/pako/2.0.3/pako.min.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260810-4"></script>
+    <script type="module" src="./main.js?v=20260810-8"></script>
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- 总体样式文件 -->
@@ -136,7 +136,11 @@
                         <tr>
                             <td>历史空闲歌单</td>
                             <td><select id="songListHistory" size="4"></select></td>
-                            <td><button id="selectSongList">选择歌单</button></td>
+                            <td>
+                                <button id="selectSongList" type="button">选择歌单</button>
+                                <button id="deleteSongListHistory" type="button">删除选中</button>
+                                <button id="clearSongListHistory" type="button">清空历史</button>
+                            </td>
                         </tr>
                     </table>
 
@@ -164,6 +168,7 @@
                                 <td><select id="userHistory" size="4"></select></td>
                                 <td>
                                     <button id="addUserBlack">加入黑名单</button>
+                                    <button id="deleteUserHistory" type="button">删除选中</button>
                                     <button id="clearUserHistory" type="button">清空历史</button>
                                 </td>
                             </tr>
@@ -180,6 +185,7 @@
                                 <td><select id="songHistory" size="4"></select></td>
                                 <td>
                                     <button id="addSongBlack">加入黑名单</button>
+                                    <button id="deleteSongHistory" type="button">删除选中</button>
                                     <button id="clearSongHistory" type="button">清空历史</button>
                                 </td>
                             </tr>

@@ -1,6 +1,6 @@
-import orderConfiger from "./order-configer.js?v=20260810-4";
-import publicMethod from "../utils/common.js?v=20260810-4";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-4";
+import orderConfiger from "./order-configer.js?v=20260810-8";
+import publicMethod from "../utils/common.js?v=20260810-8";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-8";
 
 /**
  * 音乐播放器
@@ -156,6 +156,14 @@ class MusicPlayer {
         if (message.command === 'next') this.playNext();
         if (message.command === 'toggle') this.togglePlayback();
         if (message.command === 'volume') this.setVolume(message.value);
+        if (message.command === 'unlockAudio' && !this.isMirrorMode) {
+            this.unlockPlayback();
+        }
+        if (message.command === 'loadSongList' && message.value && !this.isMirrorMode) {
+            window.dispatchEvent(new CustomEvent('bilibili-ordersong-command', {
+                detail: { command: message.command, value: message.value }
+            }));
+        }
         if (message.command === 'settings' && message.value) {
             window.__lastSharedSettings = message.value;
             window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
@@ -410,7 +418,8 @@ class MusicPlayer {
     // 用户手动点击后解锁浏览器音频策略，并尝试恢复当前歌曲
     async unlockPlayback() {
         if (this.isMirrorMode) {
-            publicMethod.pageAlert("当前页面是预览镜像，请在 OBS 播放页面启用声音");
+            this.sendCommand('unlockAudio');
+            publicMethod.pageAlert("已请求 OBS 播放页面启用声音");
             return;
         }
         if (!this.audio.src) {

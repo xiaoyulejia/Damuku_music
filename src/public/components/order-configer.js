@@ -1,4 +1,4 @@
-import publicMethod from "../utils/common.js?v=20260810-4";
+import publicMethod from "../utils/common.js?v=20260810-8";
 
 function readArray(key) {
     try {
@@ -139,6 +139,7 @@ class OrderConfiger {
                 }
             }
         };
+        document.getElementById('deleteUserHistory').onclick = () => this.deleteUserHistory();
         document.getElementById('clearUserHistory').onclick = () => this.clearUserHistory();
         // 移除黑名单的用户
         document.getElementById('delUserBlack').onclick = () => {
@@ -165,6 +166,7 @@ class OrderConfiger {
                 }
             }
         };
+        document.getElementById('deleteSongHistory').onclick = () => this.deleteSongHistory();
         document.getElementById('clearSongHistory').onclick = () => this.clearSongHistory();
 
         // 移除黑名单的歌曲
@@ -265,12 +267,42 @@ class OrderConfiger {
         publicMethod.pageAlert("历史点歌用户已清空");
     }
 
+    deleteUserHistory() {
+        const selectIndex = this.elem_userHistory.selectedIndex;
+        if (selectIndex < 0) {
+            publicMethod.pageAlert("未选择用户！");
+            return;
+        }
+        const selectedUser = this.userHistory[selectIndex];
+        if (!selectedUser) return;
+        this.userHistory.splice(selectIndex, 1);
+        localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
+        this.renderHistoryLists();
+        this.publishSharedState();
+        publicMethod.pageAlert(`已删除历史用户：${selectedUser.uname}`);
+    }
+
     clearSongHistory() {
         this.songHistory = [];
         localStorage.setItem("songHistory", "[]");
         this.renderHistoryLists();
         this.publishSharedState();
         publicMethod.pageAlert("历史点歌歌曲已清空");
+    }
+
+    deleteSongHistory() {
+        const selectIndex = this.elem_songHistory.selectedIndex;
+        if (selectIndex < 0) {
+            publicMethod.pageAlert("未选择歌曲！");
+            return;
+        }
+        const selectedSong = this.songHistory[selectIndex];
+        if (!selectedSong) return;
+        this.songHistory.splice(selectIndex, 1);
+        localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
+        this.renderHistoryLists();
+        this.publishSharedState();
+        publicMethod.pageAlert(`已删除历史歌曲：${selectedSong.sname}`);
     }
 
     // 添加用户黑名单信息

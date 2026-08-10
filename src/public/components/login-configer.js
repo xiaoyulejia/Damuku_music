@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260810-4";
-import publicMethod from "../utils/common.js?v=20260810-4";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-4";
+import musicPlayer from "./music-player.js?v=20260810-8";
+import publicMethod from "../utils/common.js?v=20260810-8";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-8";
 
 function readArray(key) {
     try {
@@ -39,6 +39,12 @@ class LoginConfiger {
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.login);
         });
+        window.addEventListener('bilibili-ordersong-command', event => {
+            const command = event.detail;
+            if (!musicPlayer.isMirrorMode && command?.command === 'loadSongList') {
+                this.loadSongList(command.value);
+            }
+        });
         if (window.__lastSharedSettings?.login) {
             this.applySharedState(window.__lastSharedSettings.login);
         }
@@ -71,8 +77,10 @@ class LoginConfiger {
                 publicMethod.pageAlert("未选择歌单！");
                 return;
             }
-            this.elem_songListId.value = this.elem_songListHistory[selectIndex].value;
+            this.loadSongList(this.elem_songListHistory[selectIndex].value);
         };
+        document.getElementById('deleteSongListHistory').onclick = () => this.deleteSongListHistory();
+        document.getElementById('clearSongListHistory').onclick = () => this.clearSongListHistory();
     }
 
     getSharedState() {
@@ -229,13 +237,22 @@ class LoginConfiger {
     }
 
     // 加载空闲歌单
-    async loadSongList() {
-        let listId = document.getElementById("songListId").value;
+    async loadSongList(listId = document.getElementById("songListId").value) {
+        listId = String(listId || '').trim();
+        document.getElementById("songListId").value = listId;
         // 无效ID
         if (!listId) {
             publicMethod.pageAlert("请输入有效歌单ID");
             return;
         }
+
+        // 预览页没有播放器和网易云登录态，必须请求 OBS 播放页加载。
+        if (musicPlayer.isMirrorMode) {
+            musicPlayer.sendCommand('loadSongList', listId);
+            publicMethod.pageAlert(`已请求 OBS 加载歌单：${listId}`);
+            return true;
+        }
+
         // 获取新的歌单列表
         let songList = await musicServer.getServer().getSongList(listId);
         if (!songList.length) {
@@ -247,6 +264,7 @@ class LoginConfiger {
         this.songListId = listId;
         // 洗牌后加载歌单信息
         musicPlayer.idleSongList = publicMethod.shuffle(songList);
+        musicPlayer.idleIndex = -1;
         musicPlayer.playNext();
 
         // 添加到历史记录中
@@ -306,6 +324,32 @@ class LoginConfiger {
         // 保存配置信息
         localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
         this.publishSharedState();
+    }
+
+    deleteSongListHistory() {
+        const selectIndex = this.elem_songListHistory.selectedIndex;
+        if (selectIndex < 0) {
+            publicMethod.pageAlert("未选择歌单！");
+            return;
+        }
+
+        const visibleItems = this.songListHistory.filter(item => item.platform === musicServer.platform);
+        const selectedItem = visibleItems[selectIndex];
+        if (!selectedItem) return;
+
+        this.songListHistory = this.songListHistory.filter(item => item !== selectedItem);
+        localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
+        this.loadSongListHistory();
+        this.publishSharedState();
+        publicMethod.pageAlert(`已删除历史歌单：${selectedItem.listId}`);
+    }
+
+    clearSongListHistory() {
+        this.songListHistory = [];
+        localStorage.setItem("songListHistory", "[]");
+        this.loadSongListHistory();
+        this.publishSharedState();
+        publicMethod.pageAlert("历史空闲歌单已清空");
     }
 
 }
