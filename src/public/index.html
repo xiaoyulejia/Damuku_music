@@ -10,7 +10,7 @@
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/pako/2.0.3/pako.min.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260810-1"></script>
+    <script type="module" src="./main.js?v=20260810-4"></script>
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- 总体样式文件 -->
@@ -122,6 +122,13 @@
                             </td>
                         </tr>
                         <tr>
+                            <td>网易云登录状态</td>
+                            <td>
+                                <span id="wyLoginStatus" class="loginStatus" data-state="checking">检查中...</span>
+                            </td>
+                            <td><button id="wyLoginRefresh" type="button">刷新状态</button></td>
+                        </tr>
+                        <tr>
                             <td>空闲歌单ID</td>
                             <td><input type="text" id="songListId" autocomplete="off"></td>
                             <td><button id="loadSongList">加载歌单</button></td>
@@ -155,7 +162,10 @@
                             <tr class="select">
                                 <td>历史点歌用户</td>
                                 <td><select id="userHistory" size="4"></select></td>
-                                <td><button id="addUserBlack">加入黑名单</button></td>
+                                <td>
+                                    <button id="addUserBlack">加入黑名单</button>
+                                    <button id="clearUserHistory" type="button">清空历史</button>
+                                </td>
                             </tr>
                             <tr class="select">
                                 <td>用户黑名单</td>
@@ -168,7 +178,10 @@
                             <tr class="select">
                                 <td>历史点歌歌曲</td>
                                 <td><select id="songHistory" size="4"></select></td>
-                                <td><button id="addSongBlack">加入黑名单</button></td>
+                                <td>
+                                    <button id="addSongBlack">加入黑名单</button>
+                                    <button id="clearSongHistory" type="button">清空历史</button>
+                                </td>
                             </tr>
                             <tr class="select">
                                 <td>歌曲黑名单</td>

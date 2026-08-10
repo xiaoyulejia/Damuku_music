@@ -246,6 +246,27 @@
     text-align-last: left;
 }
 
+.loginStatus {
+    display: inline-block;
+    min-width: 92px;
+    padding: 4px 9px;
+    border-radius: 999px;
+    color: #d8d7ff;
+    background: rgba(146, 125, 255, .16);
+    text-align: center;
+}
+
+.loginStatus[data-state="logged-in"] {
+    color: #b8f7d0;
+    background: rgba(66, 190, 122, .18);
+}
+
+.loginStatus[data-state="logged-out"],
+.loginStatus[data-state="error"] {
+    color: #ffc4c4;
+    background: rgba(220, 80, 93, .18);
+}
+
 /* -------------- 点歌设置页样式 ------------ */
 .setting_order_page #userBlackList,
 #songBlackList {

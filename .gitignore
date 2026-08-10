@@ -7,3 +7,18 @@
 /src/public/webapi.js
 /logs
 /api_reference
+
+# 本地环境变量和凭据文件
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+credentials.json
+secrets.json
+
+# 私钥/证书文件
+*.pem
+*.key
+*.p12
+*.pfx

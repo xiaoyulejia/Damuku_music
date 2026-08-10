@@ -1,6 +1,15 @@
-import musicPlayer from "./music-player.js";
-import publicMethod from "../utils/common.js";
-import musicServer from "../services/musicServers/music-server.js";
+import musicPlayer from "./music-player.js?v=20260810-4";
+import publicMethod from "../utils/common.js?v=20260810-4";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-4";
+
+function readArray(key) {
+    try {
+        const value = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(value) ? value : [];
+    } catch (_) {
+        return [];
+    }
+}
 
 /**
  * 登录配置
@@ -12,8 +21,13 @@ class LoginConfiger {
     elem_songListId = document.getElementById("songListId");
 
     // 历史加载的歌单ID
-    songListHistory = JSON.parse(localStorage.getItem("songListHistory")) || [];
+    songListHistory = readArray("songListHistory");
     elem_songListHistory = document.getElementById("songListHistory");
+
+    neteaseLoginStatus = {
+        state: 'checking',
+        text: '检查中...'
+    };
 
     constructor() {
         // 加载历史歌单列表
@@ -21,6 +35,16 @@ class LoginConfiger {
 
         // 添加按钮监听事件
         this.addListener();
+        this.publishSharedState();
+        window.addEventListener('bilibili-ordersong-shared-settings', event => {
+            this.applySharedState(event.detail?.login);
+        });
+        if (window.__lastSharedSettings?.login) {
+            this.applySharedState(window.__lastSharedSettings.login);
+        }
+        if (!musicPlayer.isMirrorMode || !window.__lastSharedSettings?.login) {
+            this.refreshNeteaseLoginStatus({ silent: true });
+        }
 
         console.log("登录配置初始化完成");
     }
@@ -32,6 +56,7 @@ class LoginConfiger {
 
         // 网易二维码登录
         document.getElementById('qrButton').onclick = () => this.updateQrPicture();
+        document.getElementById('wyLoginRefresh').onclick = () => this.refreshNeteaseLoginStatus();
 
         // qq cookie登录
         document.getElementById('ckButton').onclick = () => this.cookieLogin();
@@ -50,12 +75,88 @@ class LoginConfiger {
         };
     }
 
+    getSharedState() {
+        return {
+            songListId: this.songListId,
+            songListHistory: this.songListHistory,
+            neteaseLoginStatus: this.neteaseLoginStatus
+        };
+    }
+
+    publishSharedState() {
+        const state = this.getSharedState();
+        window.__loginSettingsState = state;
+        window.dispatchEvent(new CustomEvent('bilibili-ordersong-settings-changed', {
+            detail: { login: state }
+        }));
+    }
+
+    applySharedState(state) {
+        if (!state) return;
+        if (typeof state.songListId === 'string' && state.songListId) {
+            this.songListId = state.songListId;
+            this.elem_songListId.value = state.songListId;
+            localStorage.setItem("songListId", state.songListId);
+        }
+        if (Array.isArray(state.songListHistory)) {
+            this.songListHistory = state.songListHistory;
+            localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
+            this.loadSongListHistory();
+        }
+        if (state.neteaseLoginStatus) this.setNeteaseLoginStatus(state.neteaseLoginStatus, false);
+        window.__loginSettingsState = this.getSharedState();
+    }
+
+    setNeteaseLoginStatus(status, publish = true) {
+        this.neteaseLoginStatus = {
+            state: status?.state || 'error',
+            text: status?.text || '状态未知',
+            nickname: status?.nickname || ''
+        };
+        const element = document.getElementById('wyLoginStatus');
+        if (element) {
+            element.dataset.state = this.neteaseLoginStatus.state;
+            element.textContent = this.neteaseLoginStatus.text;
+            element.title = this.neteaseLoginStatus.nickname || '';
+        }
+        if (publish) this.publishSharedState();
+    }
+
+    async refreshNeteaseLoginStatus({ silent = false } = {}) {
+        this.setNeteaseLoginStatus({ state: 'checking', text: '检查中...' }, false);
+        const server = musicServer.getServer('wy');
+        if (!server.cookie) {
+            this.setNeteaseLoginStatus({ state: 'logged-out', text: '未登录' });
+            return false;
+        }
+
+        const result = await server.getLoginStatus();
+        if (result?.loggedIn) {
+            const nickname = result.nickname || result.profile?.nickname || '';
+            this.setNeteaseLoginStatus({
+                state: 'logged-in',
+                text: nickname ? `已登录：${nickname}` : '已登录',
+                nickname
+            });
+            return true;
+        }
+
+        this.setNeteaseLoginStatus({
+            state: result?.error ? 'error' : 'logged-out',
+            text: result?.error ? '检查失败' : '未登录'
+        });
+        if (!silent && result?.error) publicMethod.pageAlert('网易云登录状态检查失败');
+        return false;
+    }
+
     // 切换音乐平台
     async swithPlatform(e) {
         document.getElementById('loginForm').style.left = (-400 * e.target.selectedIndex) + "px";
 
         // 切换音乐API服务对象
         musicServer.changePlatform(e.target.value);
+        this.loadSongListHistory();
+        if (e.target.value === 'wy') this.refreshNeteaseLoginStatus({ silent: true });
     }
 
     // 扫码登录，更新二维码
@@ -89,9 +190,10 @@ class LoginConfiger {
             } else if (data.code == 803) {
                 // 授权成功, 保存cookie
                 musicServer.getServer("wy").cookie = data.cookie;
-                localStorage.setItem("wycookie", JSON.stringify(data.cookie));
+                localStorage.setItem("wycookie", typeof data.cookie === 'string' ? data.cookie : JSON.stringify(data.cookie));
                 qrImg.setAttribute("src", "");
                 clearInterval(qrCheck);
+                await this.refreshNeteaseLoginStatus({ silent: true });
                 publicMethod.pageAlert("登录成功!");
             }
         }, 3000)
@@ -119,7 +221,7 @@ class LoginConfiger {
 
         // 获取QQ号指定的cookie
         const getResult = await musicServer.getServer("qq").getCookie(qqNumber);
-        if (setResult) {
+        if (getResult) {
             publicMethod.pageAlert("获取cookie成功!");
         } else {
             publicMethod.pageAlert("获取cookie失败!");
@@ -184,7 +286,7 @@ class LoginConfiger {
             }
         }
         // 限长
-        if (this.songListHistory.length > 50) {
+        if (this.songListHistory.length >= 50) {
             this.songListHistory.shift();
         }
 
@@ -203,6 +305,7 @@ class LoginConfiger {
 
         // 保存配置信息
         localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
+        this.publishSharedState();
     }
 
 }

@@ -1,6 +1,8 @@
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const encrypt = require('../utils/encrypt');
 
 // 创建axios实例，指向B站开放平台
@@ -27,6 +29,26 @@ const router = express.Router();
 const sharedOrderStates = new Map();
 const sharedOrderCommands = new Map();
 let sharedOrderCommandSeq = 0;
+const sharedSyncDir = path.join(__dirname, '../../logs/order-sync');
+fs.mkdirSync(sharedSyncDir, { recursive: true });
+
+function syncFilePath(prefix, roomId) {
+    return path.join(sharedSyncDir, `${prefix}-${String(roomId).replace(/[^0-9a-z_-]/gi, '_')}.json`);
+}
+
+function readSyncFile(filePath, fallback = null) {
+    try {
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function writeSyncFile(filePath, value) {
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(value), 'utf8');
+    fs.renameSync(tempPath, filePath);
+}
 
 const MIXIN_KEY_TABLE = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13];
 
@@ -39,7 +61,12 @@ function wbiSign(params, mixinKey) {
 // OBS 浏览器源与外部浏览器之间的点歌状态同步
 router.get('/live/sync-state', (req, res) => {
     const roomId = String(req.query.room_id || req.query.roomid || 'default');
-    res.json({ code: 0, data: sharedOrderStates.get(roomId) || null });
+    const state = readSyncFile(
+        syncFilePath('state', roomId),
+        sharedOrderStates.get(roomId) || null
+    );
+    if (state) sharedOrderStates.set(roomId, state);
+    res.json({ code: 0, data: state });
 });
 
 router.post('/live/sync-state', (req, res) => {
@@ -48,8 +75,23 @@ router.post('/live/sync-state', (req, res) => {
     if (!state || typeof state !== 'object') {
         return res.status(400).json({ code: -1, message: 'state必须是对象' });
     }
-    sharedOrderStates.set(roomId, state);
-    res.json({ code: 0, data: state });
+    const filePath = syncFilePath('state', roomId);
+    const current = readSyncFile(filePath, sharedOrderStates.get(roomId) || null);
+    const incomingUpdatedAt = Number(state.updatedAt) || Date.now();
+    const currentUpdatedAt = Number(current?.updatedAt) || 0;
+    if (current && currentUpdatedAt > incomingUpdatedAt) {
+        return res.json({ code: 0, data: current, ignored: true });
+    }
+    // 旧页面或尚未完成初始化的页面可能不会携带设置数据，不能因此清空
+    // OBS 已经同步过来的历史记录和登录状态。
+    const nextState = {
+        ...state,
+        settings: state.settings || current?.settings || null,
+        updatedAt: incomingUpdatedAt
+    };
+    writeSyncFile(filePath, nextState);
+    sharedOrderStates.set(roomId, nextState);
+    res.json({ code: 0, data: nextState });
 });
 
 router.post('/live/sync-command', (req, res) => {
@@ -58,9 +100,18 @@ router.post('/live/sync-command', (req, res) => {
     if (!command || typeof command !== 'object') {
         return res.status(400).json({ code: -1, message: 'command必须是对象' });
     }
-    const list = sharedOrderCommands.get(roomId) || [];
-    list.push({ ...command, sequence: ++sharedOrderCommandSeq, createdAt: Date.now() });
-    sharedOrderCommands.set(roomId, list.slice(-100));
+    const filePath = syncFilePath('commands', roomId);
+    const list = readSyncFile(filePath, sharedOrderCommands.get(roomId) || []);
+    const lastSequence = list.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
+    const nextCommand = {
+        ...command,
+        sequence: Math.max(sharedOrderCommandSeq, lastSequence) + 1,
+        createdAt: Date.now()
+    };
+    sharedOrderCommandSeq = nextCommand.sequence;
+    const nextList = [...list, nextCommand].slice(-100);
+    writeSyncFile(filePath, nextList);
+    sharedOrderCommands.set(roomId, nextList);
     res.json({ code: 0 });
 });
 
@@ -68,7 +119,10 @@ router.get('/live/sync-commands', (req, res) => {
     const roomId = String(req.query.room_id || req.query.roomid || 'default');
     const after = Number(req.query.after || 0);
     const since = Number(req.query.since || 0);
-    const commands = (sharedOrderCommands.get(roomId) || [])
+    const commands = readSyncFile(
+        syncFilePath('commands', roomId),
+        sharedOrderCommands.get(roomId) || []
+    )
         .filter(command => command.sequence > after && command.createdAt >= since);
     res.json({ code: 0, data: commands });
 });

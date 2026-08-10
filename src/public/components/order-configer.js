@@ -1,4 +1,13 @@
-import publicMethod from "../utils/common.js";
+import publicMethod from "../utils/common.js?v=20260810-4";
+
+function readArray(key) {
+    try {
+        const value = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(value) ? value : [];
+    } catch (_) {
+        return [];
+    }
+}
 
 /**
  * 点歌配置项
@@ -23,19 +32,19 @@ class OrderConfiger {
     elem_overLimitSkip = document.getElementById('overLimitSkip');
 
     // 历史点歌用户
-    userHistory = JSON.parse(localStorage.getItem("userHistory")) || [];
+    userHistory = readArray("userHistory");
     elem_userHistory = document.getElementById("userHistory");
 
     // 历史点歌歌曲
-    songHistory = JSON.parse(localStorage.getItem("songHistory")) || [];
+    songHistory = readArray("songHistory");
     elem_songHistory = document.getElementById("songHistory");
 
     // 用户黑名单
-    userBlackList = JSON.parse(localStorage.getItem("userBlackList")) || [];
+    userBlackList = readArray("userBlackList");
     elem_userBlackList = document.getElementById("userBlackList");
 
     // 歌曲黑名单
-    songBlackList = JSON.parse(localStorage.getItem("songBlackList")) || [];
+    songBlackList = readArray("songBlackList");
     elem_songBlackList = document.getElementById("songBlackList");
 
     // 构造函数
@@ -46,41 +55,65 @@ class OrderConfiger {
         this.elem_orderMaxDuration.value = this.orderMaxDuration;
         this.elem_overLimitSkip.value = this.overLimitSkip;
 
-        // 加载历史用户列表
-        for (let i = 0; i < this.userHistory.length; i++) {
-            let option = document.createElement('option');
-            option.value = this.userHistory[i].uid;
-            option.textContent = this.userHistory[i].uname;
-            this.elem_userHistory.appendChild(option);
-        }
-
-        // 加载用户黑名单
-        for (let i = 0; i < this.userBlackList.length; i++) {
-            let option = document.createElement('option');
-            option.value = this.userBlackList[i].uid;
-            option.textContent = this.userBlackList[i].uname;
-            this.elem_userBlackList.appendChild(option);
-        }
-
-        // 加载历史点歌歌曲
-        for (let i = 0; i < this.songHistory.length; i++) {
-            let option = document.createElement('option');
-            option.value = this.songHistory[i].sid;
-            option.textContent = this.songHistory[i].sname;
-            this.elem_songHistory.appendChild(option);
-        }
-
-        // 加载歌曲黑名单
-        for (let i = 0; i < this.songBlackList.length; i++) {
-            let option = document.createElement('option');
-            option.value = this.songBlackList[i].sid;
-            option.textContent = this.songBlackList[i].sname;
-            this.elem_songBlackList.appendChild(option);
-        }
+        this.renderHistoryLists();
 
         this.addListener();
+        this.publishSharedState();
+        window.addEventListener('bilibili-ordersong-shared-settings', event => {
+            this.applySharedState(event.detail?.order);
+        });
         console.log("点歌配置初始化完成");
         publicMethod.pageAlert("已初始化配置项!");
+    }
+
+    getSharedState() {
+        return {
+            userHistory: this.userHistory,
+            songHistory: this.songHistory,
+            userBlackList: this.userBlackList,
+            songBlackList: this.songBlackList
+        };
+    }
+
+    publishSharedState() {
+        const state = this.getSharedState();
+        window.__orderSettingsState = state;
+        window.dispatchEvent(new CustomEvent('bilibili-ordersong-settings-changed', {
+            detail: { order: state }
+        }));
+    }
+
+    applySharedState(state) {
+        if (!state) return;
+        if (Array.isArray(state.userHistory)) this.userHistory = state.userHistory;
+        if (Array.isArray(state.songHistory)) this.songHistory = state.songHistory;
+        if (Array.isArray(state.userBlackList)) this.userBlackList = state.userBlackList;
+        if (Array.isArray(state.songBlackList)) this.songBlackList = state.songBlackList;
+
+        localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
+        localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
+        localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
+        localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
+        this.renderHistoryLists();
+        window.__orderSettingsState = this.getSharedState();
+    }
+
+    renderHistoryLists() {
+        const fill = (element, items, valueKey, textKey) => {
+            if (!element) return;
+            element.innerHTML = '';
+            items.forEach(item => {
+                const option = document.createElement('option');
+                option.value = String(item[valueKey]);
+                option.textContent = item[textKey] || item.sname || item.uname || item[valueKey];
+                element.appendChild(option);
+            });
+        };
+
+        fill(this.elem_userHistory, this.userHistory, 'uid', 'uname');
+        fill(this.elem_songHistory, this.songHistory, 'sid', 'sname');
+        fill(this.elem_userBlackList, this.userBlackList, 'uid', 'uname');
+        fill(this.elem_songBlackList, this.songBlackList, 'sid', 'sname');
     }
 
     // 添加控件的监听事件
@@ -106,6 +139,7 @@ class OrderConfiger {
                 }
             }
         };
+        document.getElementById('clearUserHistory').onclick = () => this.clearUserHistory();
         // 移除黑名单的用户
         document.getElementById('delUserBlack').onclick = () => {
             let select = this.elem_userBlackList.selectedIndex;
@@ -131,6 +165,7 @@ class OrderConfiger {
                 }
             }
         };
+        document.getElementById('clearSongHistory').onclick = () => this.clearSongHistory();
 
         // 移除黑名单的歌曲
         document.getElementById('delSongBlack').onclick = () => {
@@ -192,19 +227,15 @@ class OrderConfiger {
             }
         }
         // 限长，按队列结构出队（防止无限占用内存）
-        if (this.userHistory.length > 50) {
+        if (this.userHistory.length >= 50) {
             this.userHistory.shift();
         }
         // 添加用户信息
         this.userHistory.push(user);
-        // 同步页面的历史用户下拉框
-        let elem_userHistory = document.getElementById('userHistory');
-        let elem_option = document.createElement('option');
-        elem_option.value = user.uid;
-        elem_option.textContent = user.uname;
-        elem_userHistory.appendChild(elem_option);
         // 保存到本地
         localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
+        this.renderHistoryLists();
+        this.publishSharedState();
     }
 
     // 添加历史歌曲信息
@@ -215,19 +246,31 @@ class OrderConfiger {
             }
         }
         // 限长，按队列结构出队（防止无限占用内存）
-        if (this.songHistory.length > 50) {
+        if (this.songHistory.length >= 50) {
             this.songHistory.shift();
         }
         // 添加歌曲信息
         this.songHistory.push(song);
-        // 同步页面的历史歌曲下拉框
-        let elem_songHistory = document.getElementById('songHistory');
-        let elem_option = document.createElement('option');
-        elem_option.value = song.sid;
-        elem_option.textContent = song.sname;
-        elem_songHistory.appendChild(elem_option);
         // 保存到本地
         localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
+        this.renderHistoryLists();
+        this.publishSharedState();
+    }
+
+    clearUserHistory() {
+        this.userHistory = [];
+        localStorage.setItem("userHistory", "[]");
+        this.renderHistoryLists();
+        this.publishSharedState();
+        publicMethod.pageAlert("历史点歌用户已清空");
+    }
+
+    clearSongHistory() {
+        this.songHistory = [];
+        localStorage.setItem("songHistory", "[]");
+        this.renderHistoryLists();
+        this.publishSharedState();
+        publicMethod.pageAlert("历史点歌歌曲已清空");
     }
 
     // 添加用户黑名单信息
@@ -240,19 +283,15 @@ class OrderConfiger {
             }
         }
         // 限长，按队列结构出队（防止无限占用内存）
-        if (this.userBlackList.length > 50) {
+        if (this.userBlackList.length >= 50) {
             this.userBlackList.shift();
         }
         // 用户黑名单添加用户
         this.userBlackList.push(user);
-        // 页面用户黑名单列表添加用户
-        let elem_userBlackList = document.getElementById('userBlackList');
-        let elem_option = document.createElement('option');
-        elem_option.value = user.uid;
-        elem_option.textContent = user.uname;
-        elem_userBlackList.appendChild(elem_option);
         // 保存到本地
         localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
+        this.renderHistoryLists();
+        this.publishSharedState();
     }
 
     // 移除用户黑名单配置项中对应的用户信息
@@ -265,9 +304,10 @@ class OrderConfiger {
             }
         }
         // 移除页面中用户黑名单的选中用户
-        this.elem_userBlackList.querySelector(`option[value='${uid}']`).remove();
+        this.elem_userBlackList.querySelector(`option[value='${uid}']`)?.remove();
         // 更新本地存储配置项
         localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
+        this.publishSharedState();
     }
 
     // 添加歌曲黑名单信息
@@ -280,19 +320,15 @@ class OrderConfiger {
             }
         }
         // 限长，按队列结构出队（防止无限占用内存）
-        if (this.songBlackList.length > 50) {
+        if (this.songBlackList.length >= 50) {
             this.songBlackList.shift();
         }
         // 歌曲黑名单添加歌曲
         this.songBlackList.push(song);
-        // 页面歌曲黑名单列表添加歌曲
-        let elem_songBlackList = document.getElementById('songBlackList');
-        let elem_option = document.createElement('option');
-        elem_option.value = song.sid;
-        elem_option.textContent = song.sname;
-        elem_songBlackList.appendChild(elem_option);
         // 保存到本地
         localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
+        this.renderHistoryLists();
+        this.publishSharedState();
     }
 
     // 歌曲黑名单移除歌曲
@@ -305,9 +341,10 @@ class OrderConfiger {
             }
         }
         // 移除页面中歌曲黑名单的选中歌曲
-        this.elem_songBlackList.querySelector(`option[value='${sid}']`).remove();
+        this.elem_songBlackList.querySelector(`option[value='${sid}']`)?.remove();
         // 更新本地存储配置项
         localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
+        this.publishSharedState();
     }
 
 }

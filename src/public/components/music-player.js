@@ -1,6 +1,6 @@
-import orderConfiger from "./order-configer.js";
-import publicMethod from "../utils/common.js";
-import musicServer from "../services/musicServers/music-server.js";
+import orderConfiger from "./order-configer.js?v=20260810-4";
+import publicMethod from "../utils/common.js?v=20260810-4";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-4";
 
 /**
  * 音乐播放器
@@ -39,6 +39,9 @@ class MusicPlayer {
     stateChannel = null;
     stateTimer = null;
     statePollTimer = null;
+    statePulling = false;
+    statePushQueue = Promise.resolve();
+    commandPulling = false;
     stateStorageKey = 'bilibiliOrdersongSharedState';
     lastSharedStateAt = 0;
     commandPollTimer = null;
@@ -49,11 +52,22 @@ class MusicPlayer {
 
     constructor() {
         this.isMirrorMode = !this.getPageLiveMode();
-        this.stateStorageKey = `bilibiliOrdersongSharedState:${this.getPageRoomId() || 'default'}`;
+        const roomId = this.getPageRoomId() || 'default';
+        this.stateStorageKey = `bilibiliOrdersongSharedState:${roomId}`;
         this.volumePercent = Number(localStorage.getItem('playerVolume') || 50);
         this.applyVolume(this.volumePercent);
         this.initStateSync();
         this.addListener();
+        window.addEventListener('bilibili-ordersong-settings-changed', event => {
+            if (!this.isMirrorMode) {
+                this.publishState();
+                return;
+            }
+            this.sendCommand('settings', {
+                order: event.detail?.order || window.__orderSettingsState || null,
+                login: event.detail?.login || window.__loginSettingsState || null
+            });
+        });
         this.updateQueueView();
         console.log("音乐播放器初始化完成");
     }
@@ -74,7 +88,7 @@ class MusicPlayer {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         if (new URLSearchParams(query).get('settings') === '1') return;
         if (typeof BroadcastChannel === 'function') {
-            this.stateChannel = new BroadcastChannel('bilibili-ordersong-state');
+            this.stateChannel = new BroadcastChannel(`bilibili-ordersong-state:${this.getPageRoomId() || 'default'}`);
             this.stateChannel.onmessage = event => this.handleStateMessage(event.data);
         }
         window.addEventListener('storage', event => {
@@ -84,10 +98,10 @@ class MusicPlayer {
         });
         if (this.isMirrorMode) {
             this.requestSharedState();
-            this.statePollTimer = setInterval(() => this.pullSharedState(), 2000);
+            this.statePollTimer = setInterval(() => this.pullSharedState(), 1000);
         } else {
             this.publishState();
-            this.stateTimer = setInterval(() => this.publishState(), 2000);
+            this.stateTimer = setInterval(() => this.publishState(), 1000);
             this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
         }
     }
@@ -102,9 +116,11 @@ class MusicPlayer {
     }
 
     async pullSharedState() {
+        if (this.statePulling) return;
         const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId) return;
+        this.statePulling = true;
         try {
             const response = await fetch(`${apiBase}/live/sync-state?room_id=${encodeURIComponent(roomId)}`, {
                 cache: 'no-store'
@@ -113,6 +129,8 @@ class MusicPlayer {
             if (result.code === 0 && result.data) this.applySharedState(result.data);
         } catch (_) {
             // 服务器端点不可用时，仍保留同浏览器内的 BroadcastChannel/localStorage 同步。
+        } finally {
+            this.statePulling = false;
         }
     }
 
@@ -138,6 +156,13 @@ class MusicPlayer {
         if (message.command === 'next') this.playNext();
         if (message.command === 'toggle') this.togglePlayback();
         if (message.command === 'volume') this.setVolume(message.value);
+        if (message.command === 'settings' && message.value) {
+            window.__lastSharedSettings = message.value;
+            window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
+                detail: message.value
+            }));
+            this.publishState();
+        }
     }
 
     publishState() {
@@ -152,11 +177,17 @@ class MusicPlayer {
             currentRequester: this.currentRequester,
             status: this.playerState || '等待播放',
             volume: this.volumePercent,
+            settings: {
+                order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
+                login: window.__loginSettingsState || window.__lastSharedSettings?.login || null
+            },
             updatedAt: Date.now()
         };
         try { localStorage.setItem(this.stateStorageKey, JSON.stringify(state)); } catch (_) { }
         this.stateChannel?.postMessage({ type: 'state', state });
-        this.pushSharedState(state);
+        this.statePushQueue = this.statePushQueue
+            .then(() => this.pushSharedState(state))
+            .catch(() => {});
     }
 
     async pushSharedState(state) {
@@ -188,9 +219,11 @@ class MusicPlayer {
     }
 
     async pullSharedCommands() {
+        if (this.commandPulling) return;
         const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId || this.isMirrorMode) return;
+        this.commandPulling = true;
         try {
             const url = `${apiBase}/live/sync-commands?room_id=${encodeURIComponent(roomId)}&after=${this.lastCommandId}&since=${this.commandStartedAt}`;
             const response = await fetch(url, { cache: 'no-store' });
@@ -200,6 +233,9 @@ class MusicPlayer {
                 this.handleCommand(command);
             }
         } catch (_) { }
+        finally {
+            this.commandPulling = false;
+        }
     }
 
     setVolume(value) {
@@ -240,6 +276,12 @@ class MusicPlayer {
         this.currentSong = state.currentSong || this.orderList[0]?.song || null;
         this.currentRequester = state.currentRequester || this.orderList[0]?.uname || '';
         if (state.volume != null) this.applyVolume(state.volume);
+        if (state.settings) {
+            window.__lastSharedSettings = state.settings;
+            window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
+                detail: state.settings
+            }));
+        }
         this.renderQueue();
         this.updateNowPlaying(this.currentSong, this.currentRequester);
         this.updatePlayerState(state.status || '等待 OBS 播放');

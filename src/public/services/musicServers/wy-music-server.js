@@ -3,7 +3,16 @@ class WyMusicServer {
     // 服务器地址
     baseUrl = window.API_CONFIG.BASE_PATH + window.API_CONFIG.netease_api;
 
-    cookie = localStorage.getItem("wycookie");
+    cookie = (() => {
+        const value = localStorage.getItem("wycookie");
+        if (!value) return null;
+        try {
+            const parsed = JSON.parse(value);
+            return typeof parsed === 'string' ? parsed : value;
+        } catch (_) {
+            return value;
+        }
+    })();
 
     // 游客登录
     async anonimousLogin() {
@@ -38,7 +47,7 @@ class WyMusicServer {
 
     // 获取登录状态
     async getLoginStatus() {
-        let data = null;
+        let result = null;
         await axios({
             method: "get",
             url: this.baseUrl + "/login/status",
@@ -46,11 +55,22 @@ class WyMusicServer {
                 cookie: this.cookie
             }
         }).then(function (resp) {
-            data = resp.data.data;
+            const payload = resp.data || {};
+            const data = payload.data || {};
+            const profile = data.profile || null;
+            const account = data.account || null;
+            result = {
+                loggedIn: Boolean(profile || account),
+                profile,
+                account,
+                nickname: profile?.nickname || profile?.name || '',
+                code: payload.code
+            };
         }).catch(function (error) {
             console.log("获取登录状态失败!", error.response);
+            result = { loggedIn: false, error: true };
         });
-        return data;
+        return result;
     }
 
     // 获取二维码
@@ -219,4 +239,3 @@ class WyMusicServer {
 }
 
 export default new WyMusicServer();
-
