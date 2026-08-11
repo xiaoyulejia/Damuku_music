@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>点歌台启动器</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            background: #12121b;
+            color: #f7f5ff;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            padding: 24px;
+            background:
+                radial-gradient(circle at 20% 0%, rgba(135, 113, 255, .22), transparent 38%),
+                radial-gradient(circle at 100% 100%, rgba(72, 186, 255, .12), transparent 35%),
+                #12121b;
+        }
+
+        main {
+            width: min(760px, 100%);
+            padding: clamp(24px, 5vw, 48px);
+            border: 1px solid rgba(255, 255, 255, .12);
+            border-radius: 24px;
+            background: rgba(27, 26, 39, .9);
+            box-shadow: 0 24px 70px rgba(0, 0, 0, .28);
+        }
+
+        h1 { margin: 0 0 10px; font-size: clamp(28px, 5vw, 42px); }
+        p { color: #bcb8d0; line-height: 1.7; }
+
+        .room-form { display: flex; gap: 12px; margin: 28px 0 12px; }
+        input, button {
+            min-height: 46px;
+            border: 1px solid rgba(255, 255, 255, .16);
+            border-radius: 10px;
+            font: inherit;
+        }
+        input {
+            flex: 1;
+            min-width: 0;
+            padding: 0 14px;
+            color: #fff;
+            background: rgba(255, 255, 255, .08);
+        }
+        button {
+            padding: 0 18px;
+            color: #fff;
+            cursor: pointer;
+            background: #7561e8;
+        }
+        button:hover { filter: brightness(1.12); }
+        button.secondary { background: rgba(255, 255, 255, .1); }
+
+        #error { min-height: 24px; margin: 0; color: #ff9eaa; }
+        .links { display: grid; gap: 14px; margin-top: 20px; }
+        .link-card {
+            display: grid;
+            grid-template-columns: 150px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 12px;
+            padding: 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, .06);
+        }
+        .link-card strong { color: #dfd9ff; }
+        .link-card a {
+            min-width: 0;
+            overflow: hidden;
+            color: #b9d6ff;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .actions { display: flex; gap: 8px; }
+        .actions button { min-height: 38px; padding: 0 12px; font-size: 14px; }
+        footer { margin-top: 26px; color: #8d899f; font-size: 13px; }
+        footer a { color: #b9d6ff; }
+
+        @media (max-width: 640px) {
+            .room-form, .link-card { display: flex; flex-wrap: wrap; }
+            .room-form input { flex-basis: 100%; }
+            .link-card strong { flex: 0 0 100%; }
+            .link-card a { flex: 1 1 220px; }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <h1>点歌台启动器</h1>
+    <p>输入 B 站直播间号，生成 OBS 播放页面和控制页面。两个页面应使用同一个房间号。</p>
+
+    <form id="roomForm" class="room-form">
+        <input id="roomId" name="roomid" inputmode="numeric" autocomplete="off" placeholder="例如：4646297" aria-label="B站直播间号">
+        <button type="submit">生成链接</button>
+    </form>
+    <p id="error" role="alert"></p>
+
+    <section id="links" class="links" hidden>
+        <div class="link-card">
+            <strong>OBS 播放页面</strong>
+            <a id="obsLink" target="_blank" rel="noreferrer"></a>
+            <span class="actions">
+                <button type="button" class="secondary" data-copy="obsLink">复制</button>
+                <button type="button" data-open="obsLink">打开</button>
+            </span>
+        </div>
+        <div class="link-card">
+            <strong>控制页面</strong>
+            <a id="controlLink" target="_blank" rel="noreferrer"></a>
+            <span class="actions">
+                <button type="button" class="secondary" data-copy="controlLink">复制</button>
+                <button type="button" data-open="controlLink">打开</button>
+            </span>
+        </div>
+    </section>
+
+    <footer>
+        设置页面：<a id="settingsLink" target="_blank" rel="noreferrer">打开设置</a>
+        · OBS 页面负责播放，控制页面负责切歌、歌单和声音控制。
+    </footer>
+</main>
+<script>
+    const form = document.getElementById('roomForm');
+    const roomInput = document.getElementById('roomId');
+    const error = document.getElementById('error');
+    const links = document.getElementById('links');
+    const initialRoom = new URLSearchParams(location.search).get('roomid')
+        || new URLSearchParams(location.search).get('room_id');
+
+    function buildUrl(query) {
+        return new URL(`./?${new URLSearchParams(query).toString()}`, location.href).href;
+    }
+
+    function renderLinks(roomId) {
+        const obsUrl = buildUrl({ roomid: roomId });
+        const controlUrl = buildUrl({ roomid: roomId, livemode: 'false' });
+        const settingsUrl = new URL(`./settings.html?roomid=${encodeURIComponent(roomId)}`, location.href).href;
+        const obsLink = document.getElementById('obsLink');
+        const controlLink = document.getElementById('controlLink');
+        obsLink.href = obsUrl;
+        obsLink.textContent = obsUrl;
+        controlLink.href = controlUrl;
+        controlLink.textContent = controlUrl;
+        document.getElementById('settingsLink').href = settingsUrl;
+        links.hidden = false;
+        history.replaceState(null, '', `?roomid=${encodeURIComponent(roomId)}`);
+    }
+
+    form.addEventListener('submit', event => {
+        event.preventDefault();
+        const roomId = roomInput.value.trim();
+        if (!/^[1-9]\d*$/.test(roomId)) {
+            error.textContent = '请输入有效的 B 站直播间号（只填写数字）。';
+            links.hidden = true;
+            roomInput.focus();
+            return;
+        }
+        error.textContent = '';
+        renderLinks(roomId);
+    });
+
+    document.addEventListener('click', async event => {
+        const button = event.target.closest('button[data-copy], button[data-open]');
+        if (!button) return;
+        const target = document.getElementById(button.dataset.copy || button.dataset.open);
+        if (button.dataset.open) {
+            window.open(target.href, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(target.href);
+            button.textContent = '已复制';
+            setTimeout(() => { button.textContent = '复制'; }, 1200);
+        } catch {
+            target.focus();
+            alert('复制失败，请手动选择链接复制。');
+        }
+    });
+
+    if (initialRoom) {
+        roomInput.value = initialRoom;
+        form.requestSubmit();
+    } else {
+        roomInput.focus();
+    }
+</script>
+</body>
+</html>

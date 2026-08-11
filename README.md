@@ -1,160 +1,132 @@
 # Damuku_music
 
-为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐。
+一个面向 B 站直播间的弹幕点歌台，支持网易云音乐和 QQ 音乐。项目包含 OBS 播放页面、独立控制页面、弹幕点歌、队列管理、空闲歌单和浏览器本地设置。
 
-## 项目介绍
+## 最快开始（Windows）
 
-本插件是一个基于 H5 的直播间点歌组件，可嵌入直播姬、OBS 等直播软件的浏览器源中使用。观众通过发送弹幕指令即可点歌，插件自动获取歌曲资源并播放。
+1. 安装 [Node.js 24 LTS（推荐，至少 Node.js 18）](https://nodejs.org/en/download/)。
+2. 双击项目根目录的 `启动点歌台.bat`。
+3. 脚本首次运行会优先使用国内 npm 镜像安装依赖；镜像失败会自动切换 npm 官方源重试，随后启动服务并打开“点歌台启动器”。
+4. 输入 B 站直播间号，点击“生成链接”，即可复制两个页面地址。
 
-主要功能：
-- 支持观众弹幕点歌、切歌、暂停、播放控制、空闲歌单自动播放
-- 可设置用户点歌数、全局点歌数、歌曲时长限制、用户/歌曲黑名单管理
-- B站普通直播弹幕协议对接（通过直播间 token），支持网易云音乐（集成）、QQ音乐（自行部署）
-- API服务支持集成挂载或独立部署
+如果浏览器没有自动打开，也可以手动访问：
 
-## 部署
-### 安装步骤
-
-```bash
-# 克隆项目（gitcode/github）
-git clone https://gitcode.com/xiao-an/bilibili-ordersong-plugin.git Damuku_music
-
-# git clone https://github.com/xiaoan-1/bilibili-ordersong-plugin.git Damuku_music
-
-cd Damuku_music
-
-# 安装依赖
-pnpm i
+```text
+http://localhost:8000/order/launcher.html
 ```
 
-### 服务管理
+启动器生成的两个链接如下：
+
+| 页面 | 用途 |
+| --- | --- |
+| `/order/?roomid=房间号` | OBS 浏览器源播放页，默认直播模式 |
+| `/order/?roomid=房间号&livemode=false` | 控制/预览页，用于切歌、歌单、声音和队列控制 |
+
+OBS 中添加“浏览器”来源时使用第一个链接；日常管理使用第二个链接。两个页面必须填写同一个房间号。设置页可以从启动器打开，也可以访问 `/order/settings.html?roomid=房间号`。
+
+## 命令行启动
+
 ```bash
-# 启动服务
-npm run start
+# 安装依赖
+npm install
 
-# 停止服务
+# 开发或本地直接运行，启动后手动访问启动器
+npm run dev
+
+# 一键启动并自动打开启动器
+npm run launch
+
+# PM2 后台运行（适合长期运行）
+npm start
+
+# PM2 管理
 npm run stop
-
-# 重启服务
 npm run restart
-
-# 查看日志
 npm run log
 ```
 
-首次启动时，会自动从 `config/default/` 目录拷贝默认配置到 `config/` 目录。
+`启动点歌台.bat` 会检查 Node.js、npm 和 Node.js 主版本。缺少 Node.js、npm 或版本低于 18 时，会提示安装 Node.js 24 LTS 并打开官方下载页。首次安装依赖只对当前命令使用 `https://registry.npmmirror.com`，失败后自动回退到 `https://registry.npmjs.org`，不会修改电脑的全局 npm 源。
+
+`npm run launch` 会先检查 `8000` 端口是否已有服务；没有服务时直接启动 `app.js`，等待服务可访问后自动打开启动器。关闭该命令窗口会停止本次直接启动的服务。`npm start` 使用 `ecosystem.config.js` 交给 PM2 管理，适合服务器或长期运行场景。
+
+如需更换端口，可在启动前设置 `DAMUKU_PORT`；服务端实际端口仍以 `config/config.yaml` 为准，因此两者需要保持一致：
+
+```powershell
+$env:DAMUKU_PORT = 8001
+npm run launch
+```
 
 ## 配置
 
-### 服务端配置 `config/config.yaml`
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `access_key_id` | B站开放平台项目密钥 | 空 |
-| `access_key_secred` | B站开放平台签名密钥 | 空 |
-| `web_server_port` | Web服务端口号 | 8000 |
+首次启动会从 `config/default/` 自动创建以下本地配置文件：
 
->**密钥获取 → [B站直播创作者服务中心](https://open-live.bilibili.com/open-manage)**
+- `config/config.yaml`：服务监听地址、端口和 B 站开放平台配置。
+- `config/webapi.js`：前端 API 基础路径，以及网易云、QQ 音乐 API 地址。
 
-### API地址配置 `config/webapi.js`
+默认配置：
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `bili_api` | B站开放平台API地址 | `/bili-api`（集成模式） |
-| `netease_api` | 网易云音乐API地址 | `/netease_api`（集成模式） |
-| `qqmusic_api` | QQ音乐API地址 | `http://localhost:3300`（独立服务） |
-
-**地址规则：**
-- 以 `/` 开头的相对路径：表示该API集成在主服务中，启动时自动挂载
-- 完整URL地址（如 `http://localhost:3300`）：表示该API独立运行，需单独启动
-
-## 使用
-
-在直播姬或 OBS 中选择添加浏览器源，输入网址链接即可：
-
-```
-http://localhost:8000/order?roomid={直播间号}
+```yaml
+web_server_host: "127.0.0.1"
+web_server_port: 8000
 ```
 
-默认启用直播模式，只展示观众需要看的点歌队列。自己在浏览器中查看完整播放器时，使用：
+如果要让同一局域网内的其他设备访问，把 `web_server_host` 改为 `0.0.0.0`，并使用启动日志中显示的局域网地址，例如：
 
-```
-http://localhost:8000/order?roomid={直播间号}&livemode=false
-```
-
-也可以使用 `livemode=true` 显式开启直播模式；设置页中的“直播模式显示内容”可以调整观众能看到的内容。
-`livemode=false` 页面是 OBS 播放页的预览镜像，不会再次连接弹幕或加载另一份歌单，因此两边显示的当前歌曲和队列保持一致。
-
-服务端会根据直播间号自动获取弹幕 token。若已经从 B站接口取得 token，也可以直接传入 `&token={弹幕token}`。
-
-调试弹幕连接时追加 `debug=1`，浏览器开发者工具 Console 会输出 API 地址、鉴权摘要、WebSocket 数据包、原始 `DANMU_MSG` 和解析后的弹幕对象：
-
-```
-http://localhost:8000/order?roomid={直播间号}&debug=1
+```text
+http://192.168.1.100:8000/order/launcher.html
 ```
 
-**公益链接（若无法使用请自行搭建）：**
+### 网易云音乐登录
 
-> **https://xiaoan.website/order?roomid={直播间号}**
+网易云登录和 token 由浏览器端处理，保存在当前浏览器的 `localStorage` 中，不会写入项目仓库。不要把浏览器导出的 Cookie、token 或其他密钥粘贴到代码、README、日志或 Git 提交中。项目中的 `config/config.yaml`、`config/webapi.js`、`src/public/webapi.js` 和 `logs/` 已加入 `.gitignore`；修改忽略规则后，可用下面的命令确认 Git 状态：
 
-直播间号可以从直播间网址或直播中心查看；不再需要 B站开放平台身份码。
-
-
-### 观众指令
-
-1. **点歌**：发送 `点歌 (平台) 歌曲关键词`
-   - 不带平台默认为网易云音乐，目前支持 `wy`（网易）和 `qq`（QQ音乐）
-   - 开头两个字为"点歌"即可，无严格格式要求
-   - 示例：`点歌起风了`、`点歌qq起风了`
-2. **切歌**：发送 `切歌`
-3. **暂停/播放**：发送 `暂停` 或 `播放`
-   - 观众只能操作自己所点的歌曲
-   - 管理员可以操作任何人的歌曲
-
-## 设置简介
-
-主界面点击“设置”按钮，或直接打开全局设置页：
-
-```
-http://localhost:8000/order/settings.html
+```bash
+git status --short
+git check-ignore -v config/config.yaml config/webapi.js src/public/webapi.js logs
 ```
 
-设置页不需要携带 `roomid`，配置会保存在当前浏览器中，并对所有直播间生效。
-设置页包含以下设置项：
+如果密钥已经被 Git 跟踪，仅修改 `.gitignore` 不会移除它，需要先从暂存索引取消跟踪，再检查历史提交是否已经泄露。
 
-### 登录设置
-1. **音乐平台**：选择网易云音乐或QQ音乐
-2. **网易云二维码登录**：点击刷新二维码，扫码登录
-3. **QQ音乐Cookie登录**：在QQ音乐网页端登录后获取Cookie，粘贴设置
-4. **空闲歌单ID**：网易云歌单ID，无人点歌时自动播放该歌单
+## 页面说明
 
-### 点歌设置
-1. **用户点歌数**：每个用户同时已点的最大歌曲数
-2. **最大点歌数**：全局同时已点的最大歌曲数
-3. **最大歌曲时长**：限制歌曲最大时长（秒），超过无法点歌
-4. **超时限播时长**：超过最大时长也可以点，但播放到指定时间自动切歌
-5. **历史记录与黑名单**：历史点歌用户、历史点歌歌曲、用户黑名单、歌曲黑名单
+- 播放页：给 OBS 浏览器源使用，负责真正播放音频。
+- 控制页：`livemode=false`，用于控制播放、队列、空闲歌单和声音；不会另起一套弹幕点歌状态。
+- 设置页：`settings.html`，只负责配置，不会自动播放歌曲。
+- 启动器：`launcher.html`，输入房间号后生成播放页和控制页链接。
 
-### 弹幕设置
-1. **直播平台**：选择B站、抖音（暂不支持）、斗鱼（暂不支持）等平台，切换/重连弹幕服务
+播放页和控制页通过浏览器通信，并在无法使用同源通信时通过本地服务同步状态。建议先打开播放页，再打开控制页；OBS 使用播放页链接。
 
-### 显示设置
-1. **内置主题**：支持当前深色主题和白色主题
-2. **播放界面透明度**：调整 OBS 浏览器源中播放卡片的背景透明程度
-3. **背景模糊**：调整播放卡片的背景模糊效果
-4. **自定义 CSS**：可修改 `.playerCard`、`.queueCard`、`.playerActions`、`.alertBox .text` 等元素，点击“应用 CSS”后全局保存
+## 观众指令
 
-示例：
+- 点歌：`点歌歌曲关键词`，也支持 `点歌wy歌曲关键词`、`点歌qq歌曲关键词`
+- 切歌：`切歌`
+- 暂停/播放：`暂停`、`播放`
 
-```css
-.playerCard, .queueCard {
-    border-radius: 8px;
-}
+管理员和普通观众的操作权限由页面与点歌配置共同决定。
 
-.playerActions button {
-    font-size: 16px;
-}
+## 依赖与部署建议
+
+本项目是 Node.js 本地服务，不需要构建前端产物。部署到新电脑或服务器时，只需复制项目代码、安装 Node.js，然后执行：
+
+```bash
+npm install
+npm start
 ```
 
-## 致谢
+生产环境建议使用 PM2；Windows 本地使用 `启动点歌台.bat` 最方便。`logs/`、本地配置和运行时生成的 `src/public/webapi.js` 不应上传到 Git 仓库。
 
-- ~~[NeteaseCloudMusicApi](https://github.com/Binaryify/NeteaseCloudMusicApi) — 网易云音乐 Node.js API~~
+## 项目结构
+
+```text
+app.js                    # Express 服务入口
+src/public/               # 播放页、控制页、设置页和启动器
+src/routers/              # B 站 API 路由
+config/default/           # 默认配置模板
+scripts/launch.js         # 启动服务并打开启动器
+启动点歌台.bat             # Windows 一键启动
+ecosystem.config.js       # PM2 配置
+```
+
+## 许可证
+
+本项目沿用仓库中的 `LICENSE`。

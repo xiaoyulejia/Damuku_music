@@ -106,16 +106,17 @@ function getLocalIPs() {
 
 // 监听端口
 const host = config.web_server_host || '0.0.0.0';
-const server = app.listen(config.web_server_port, host, () => {
+const port = Number(process.env.DAMUKU_PORT || config.web_server_port);
+const server = app.listen(port, host, () => {
     console.log("=================服务已启动==================");
-    console.log(`本地地址：http://localhost:${config.web_server_port}${BASE_PATH}`);
+    console.log(`本地地址：http://localhost:${port}${BASE_PATH}`);
     if (host === '0.0.0.0') {    
         const ips = getLocalIPs();
         for (const ip of ips) {
-            console.log(`网络地址：http://${ip}:${config.web_server_port}${BASE_PATH}`);
+            console.log(`网络地址：http://${ip}:${port}${BASE_PATH}`);
         }
     } else {
-        console.log(`服务已启动：http://${host}:${config.web_server_port}${BASE_PATH}`);
+        console.log(`服务已启动：http://${host}:${port}${BASE_PATH}`);
     }
     console.log("");
 });
