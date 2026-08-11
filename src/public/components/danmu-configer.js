@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260810-25";
-import publicMethod from "../utils/common.js?v=20260810-25";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-25";
+import musicPlayer from "./music-player.js?v=20260810-26";
+import publicMethod from "../utils/common.js?v=20260810-26";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-26";
 import danmuServer from "../services/danmuServers/danmu-server.js?v=20260810-25";
 
 /* 在此处启动弹幕服务 */

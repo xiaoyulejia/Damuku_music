@@ -1,8 +1,8 @@
-import musicPlayer from './components/music-player.js?v=20260810-25';
-import orderConfiger from './components/order-configer.js?v=20260810-25';
-import loginConfiger from './components/login-configer.js?v=20260810-25'
-import danmuConfiger from './components/danmu-configer.js?v=20260810-25';
-import publicMethod from './utils/common.js?v=20260810-25';
+import musicPlayer from './components/music-player.js?v=20260810-26';
+import orderConfiger from './components/order-configer.js?v=20260810-26';
+import loginConfiger from './components/login-configer.js?v=20260810-26'
+import danmuConfiger from './components/danmu-configer.js?v=20260810-26';
+import publicMethod from './utils/common.js?v=20260810-26';
 
 function initializeMainPage() {
 
@@ -137,7 +137,9 @@ function initializeMainPage() {
     if (!settingsOnly && !liveMode) musicPlayer.requestSharedState();
 
     // 播放控制。浏览器通常不允许弹幕事件直接触发声音，用户点击一次即可解锁。
-    document.getElementById('unlockAudioBtn').onclick = () => musicPlayer.unlockPlayback();
+    const unlockAudio = () => musicPlayer.unlockPlayback();
+    document.getElementById('unlockAudioBtn').onclick = unlockAudio;
+    document.getElementById('audioUnlockPromptBtn').onclick = unlockAudio;
     document.getElementById('togglePlayBtn').onclick = () => musicPlayer.togglePlayback();
     document.getElementById('nextSongBtn').onclick = () => musicPlayer.playNext();
     const volumeSlider = document.getElementById('volumeSlider');

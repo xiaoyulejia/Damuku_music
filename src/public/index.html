@@ -10,11 +10,11 @@
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/pako/2.0.3/pako.min.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260810-25"></script>
+    <script type="module" src="./main.js?v=20260810-26"></script>
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260810-2">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260810-3">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
@@ -23,6 +23,10 @@
 </head>
 
 <body>
+    <div id="audioUnlockPrompt" class="audioUnlockPrompt" hidden>
+        <span>浏览器阻止了自动播放，请在 OBS 播放页点击一次启用声音</span>
+        <button id="audioUnlockPromptBtn" type="button">启用声音</button>
+    </div>
     <div class="main">
         <!-- 顶层提示弹窗 -->
         <div class="alertBox"></div>

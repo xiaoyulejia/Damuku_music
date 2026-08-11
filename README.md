@@ -96,6 +96,14 @@ git check-ignore -v config/config.yaml config/webapi.js src/public/webapi.js log
 
 播放页和控制页通过浏览器通信，并在无法使用同源通信时通过本地服务同步状态。建议先打开播放页，再打开控制页；OBS 使用播放页链接。
 
+调试时在播放页或控制页地址追加 `debug=1`，打开开发者工具 Console，可查看网易云搜索、歌单、歌曲播放地址、音频加载/播放事件，以及控制指令同步过程。日志不会输出 Cookie 或完整音频地址参数：
+
+```text
+http://localhost:8000/order/?roomid=房间号&debug=1
+```
+
+如果浏览器阻止自动播放，OBS 播放页会出现一次性的“启用声音”提示；在 OBS 页面直接点击后，控制页即可继续控制播放。
+
 ## 观众指令
 
 - 点歌：`点歌歌曲关键词`，也支持 `点歌wy歌曲关键词`、`点歌qq歌曲关键词`

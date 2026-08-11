@@ -1,6 +1,6 @@
-import orderConfiger from "./order-configer.js?v=20260810-25";
-import publicMethod from "../utils/common.js?v=20260810-25";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-25";
+import orderConfiger from "./order-configer.js?v=20260810-26";
+import publicMethod from "../utils/common.js?v=20260810-26";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-26";
 
 /**
  * 音乐播放器
@@ -52,8 +52,12 @@ class MusicPlayer {
     publisherId = '';
     publisherStartedAt = Date.now();
     acceptedPublisherId = '';
+    debug = false;
+    audioUnlockRequired = false;
+    sharedAudioUnlockRequired = false;
 
     constructor() {
+        this.debug = this.getDebugMode();
         this.isMirrorMode = !this.getPageLiveMode();
         const roomId = this.getPageRoomId() || 'default';
         this.stateStorageKey = `bilibiliOrdersongSharedState:${roomId}`;
@@ -76,7 +80,35 @@ class MusicPlayer {
             });
         });
         this.updateQueueView();
+        this.debugLog('播放器初始化', {
+            roomId,
+            mirrorMode: this.isMirrorMode,
+            liveMode: !this.isMirrorMode,
+            debug: this.debug
+        });
         console.log("音乐播放器初始化完成");
+    }
+
+    getDebugMode() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        const value = new URLSearchParams(query).get('debug') || '';
+        return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+    }
+
+    debugLog(label, value) {
+        if (!this.debug) return;
+        if (typeof value === 'undefined') console.debug(`[MusicPlayer][debug] ${label}`);
+        else console.debug(`[MusicPlayer][debug] ${label}`, value);
+    }
+
+    describeAudioUrl(url) {
+        if (!url) return '';
+        try {
+            const parsed = new URL(url, window.location.href);
+            return `${parsed.origin}${parsed.pathname}`;
+        } catch (_) {
+            return '[无法解析的音频地址]';
+        }
     }
 
     getPageLiveMode() {
@@ -157,6 +189,13 @@ class MusicPlayer {
 
     handleCommand(message) {
         if (!message || (message.id && this.handledCommandIds.has(message.id))) return;
+        this.debugLog('OBS 收到控制指令', {
+            id: message.id,
+            command: message.command,
+            value: message.command === 'volume' ? message.value : undefined,
+            sequence: message.sequence,
+            source: message.sequence ? 'http-poll' : 'broadcast-channel'
+        });
         if (message.id) {
             this.handledCommandIds.add(message.id);
             if (this.handledCommandIds.size > 100) {
@@ -195,6 +234,7 @@ class MusicPlayer {
             currentRequester: this.currentRequester,
             status: this.playerState || '等待播放',
             volume: this.volumePercent,
+            audioUnlockRequired: this.audioUnlockRequired,
             settings: {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
                 login: window.__loginSettingsState || window.__lastSharedSettings?.login || null
@@ -228,14 +268,44 @@ class MusicPlayer {
     async pushSharedCommand(command) {
         const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
         const roomId = this.getPageRoomId();
-        if (!apiBase || !roomId) return;
+        if (!apiBase || !roomId) {
+            this.debugLog('控制指令未发送：缺少同步地址或房间号', { apiBase, roomId, command: command.command });
+            return { ok: false, reason: 'missing-sync-config' };
+        }
+        const startedAt = Date.now();
+        this.debugLog('发送控制指令 HTTP 请求', {
+            method: 'POST',
+            url: `${apiBase}/live/sync-command`,
+            roomId,
+            command: command.command,
+            commandId: command.id
+        });
         try {
-            await fetch(`${apiBase}/live/sync-command`, {
+            const response = await fetch(`${apiBase}/live/sync-command`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ room_id: roomId, command })
             });
-        } catch (_) { }
+            const result = await response.json().catch(() => null);
+            const ok = response.ok && result?.code === 0;
+            this.debugLog('控制指令 HTTP 响应', {
+                command: command.command,
+                commandId: command.id,
+                status: response.status,
+                ok,
+                elapsedMs: Date.now() - startedAt,
+                result
+            });
+            return { ok, status: response.status, result };
+        } catch (error) {
+            this.debugLog('控制指令 HTTP 请求失败', {
+                command: command.command,
+                commandId: command.id,
+                elapsedMs: Date.now() - startedAt,
+                message: error.message
+            });
+            return { ok: false, reason: error.message };
+        }
     }
 
     async pullSharedCommands() {
@@ -283,9 +353,17 @@ class MusicPlayer {
             command,
             value
         };
+        this.debugLog('发送控制指令', {
+            id: message.id,
+            command,
+            value: command === 'volume' ? value : undefined,
+            roomId: this.getPageRoomId(),
+            broadcastChannel: Boolean(this.stateChannel)
+        });
         this.stateChannel?.postMessage(message);
-        this.pushSharedCommand(message);
+        const result = this.pushSharedCommand(message);
         if (!this.stateChannel && !window.API_CONFIG?.bili_api) publicMethod.pageAlert('未连接到 OBS 播放页面');
+        return result;
     }
 
     acceptSharedPublisher(state) {
@@ -302,6 +380,11 @@ class MusicPlayer {
         this.orderList = Array.isArray(state.queue) ? state.queue : [];
         this.currentSong = state.currentSong || this.orderList[0]?.song || null;
         this.currentRequester = state.currentRequester || this.orderList[0]?.uname || '';
+        const audioUnlockRequired = Boolean(state.audioUnlockRequired);
+        if (this.isMirrorMode && audioUnlockRequired && !this.sharedAudioUnlockRequired) {
+            publicMethod.pageAlert('OBS 播放页被浏览器阻止自动播放，请在 OBS 播放页点击一次启用声音');
+        }
+        this.sharedAudioUnlockRequired = audioUnlockRequired;
         if (state.volume != null) this.applyVolume(state.volume);
         if (state.settings) {
             window.__lastSharedSettings = state.settings;
@@ -341,6 +424,13 @@ class MusicPlayer {
                 dot.classList.add("dot_blink");
             }
             this.updatePlayerState("播放中");
+            this.debugLog('音频 play 事件', {
+                paused: this.audio.paused,
+                muted: this.audio.muted,
+                volume: this.audio.volume,
+                readyState: this.audio.readyState,
+                networkState: this.audio.networkState
+            });
         });
         // 2. 暂停播放事件
         this.audio.addEventListener("pause", () => {
@@ -350,7 +440,27 @@ class MusicPlayer {
                 dot.classList.remove("dot_blink");
             }
             this.updatePlayerState("已暂停");
+            this.debugLog('音频 pause 事件', {
+                currentTime: this.audio.currentTime,
+                readyState: this.audio.readyState
+            });
         });
+        this.audio.addEventListener("loadstart", () => this.debugLog('音频开始加载', {
+            src: this.describeAudioUrl(this.audio.currentSrc || this.audio.src)
+        }));
+        this.audio.addEventListener("loadedmetadata", () => this.debugLog('音频元数据已加载', {
+            duration: this.audio.duration,
+            readyState: this.audio.readyState
+        }));
+        this.audio.addEventListener("canplay", () => this.debugLog('音频可以播放', {
+            readyState: this.audio.readyState,
+            networkState: this.audio.networkState
+        }));
+        this.audio.addEventListener("waiting", () => this.debugLog('音频等待数据', {
+            currentTime: this.audio.currentTime,
+            readyState: this.audio.readyState
+        }));
+        this.audio.addEventListener("stalled", () => this.debugLog('音频网络加载停滞'));
         // 3. 播放时间更新事件
         this.audio.addEventListener("timeupdate", () => {
             let progress = document.getElementsByClassName('progress_bar')[0];
@@ -372,6 +482,14 @@ class MusicPlayer {
         });
         // 5. 播放失败事件
         this.audio.addEventListener("error", () => {
+            const mediaError = this.audio.error;
+            this.debugLog('音频 error 事件', {
+                code: mediaError?.code,
+                message: mediaError?.message || '',
+                src: this.describeAudioUrl(this.audio.currentSrc || this.audio.src),
+                networkState: this.audio.networkState,
+                readyState: this.audio.readyState
+            });
             this.updatePlayerState("播放错误");
             publicMethod.pageAlert("播放错误，即将播放下一首...");
             setTimeout(() => {
@@ -388,9 +506,31 @@ class MusicPlayer {
         this.currentRequester = requester;
         this.updateNowPlaying(song, requester);
         this.publishState();
+        this.debugLog('开始播放歌曲', {
+            platform: song?.platform,
+            songId: song?.sid,
+            songName: song?.sname,
+            artist: song?.sartist,
+            requester
+        });
 
         // 根据平台查询歌曲链接
-        const songurl = await musicServer.getServer(song.platform).getSongUrl(song.sid);
+        let songurl = null;
+        try {
+            songurl = await musicServer.getServer(song.platform).getSongUrl(song.sid);
+        } catch (error) {
+            this.debugLog('获取歌曲播放地址异常', {
+                platform: song?.platform,
+                songId: song?.sid,
+                message: error.message
+            });
+        }
+        this.debugLog('歌曲播放地址结果', {
+            platform: song?.platform,
+            songId: song?.sid,
+            hasUrl: Boolean(songurl),
+            url: this.describeAudioUrl(songurl)
+        });
 
         if (!songurl) {
             publicMethod.pageAlert("获取歌曲链接失败，即将播放下一首...");
@@ -401,6 +541,11 @@ class MusicPlayer {
         }
 
         this.audio.src = songurl;
+        this.debugLog('已设置 audio.src', {
+            src: this.describeAudioUrl(songurl),
+            muted: this.audio.muted,
+            volume: this.audio.volume
+        });
 
         /*----------------------------音量淡入-------------------------------*/
         if (this.playFadeIn) {
@@ -423,11 +568,9 @@ class MusicPlayer {
         }, 300);
         /*----------------------------音量淡入-------------------------------*/
 
-        // 播放
-        await this.audio.play().catch(err => {
-            console.warn("播放失败，可能需要用户先与页面交互：", err.message);
-            this.updatePlayerState("请点击启用声音");
-        });
+        // 播放；如果浏览器拦截有声自动播放，先静音启动，再恢复声音。
+        const played = await this.playAudioWithFallback('new-song');
+        if (!played) this.updatePlayerState("请点击启用声音");
 
         // 歌曲开始播放后，清除切歌锁，检查待执行
         this.isSwitching = false;
@@ -438,7 +581,7 @@ class MusicPlayer {
     async unlockPlayback() {
         if (this.isMirrorMode) {
             this.sendCommand('unlockAudio');
-            publicMethod.pageAlert("已请求 OBS 播放页面启用声音");
+            publicMethod.pageAlert("已发送 OBS 播放页声音指令");
             return;
         }
         if (!this.audio.src) {
@@ -446,7 +589,18 @@ class MusicPlayer {
             return;
         }
         try {
-            await this.audio.play();
+            // 音频已经以静音状态运行时，远程控制只需要解除静音，
+            // 不要再次调用 play()，否则会重新触发自动播放拦截。
+            if (!this.audio.paused && this.audio.muted) {
+                this.audio.muted = false;
+                this.audioUnlockRequired = false;
+                this.debugLog('已解除音频静音', { reason: 'unlock', remoteSafe: true });
+                this.updatePlayerState('播放中');
+                publicMethod.pageAlert("声音已启用");
+                return;
+            }
+            const played = await this.playAudioWithFallback('unlock');
+            if (!played) throw new Error('浏览器拒绝播放');
             publicMethod.pageAlert("声音已启用");
         } catch (error) {
             console.warn("手动启用声音失败：", error);
@@ -470,6 +624,60 @@ class MusicPlayer {
         }
     }
 
+    async playAudioWithFallback(reason = 'unknown') {
+        this.debugLog('尝试播放音频', {
+            reason,
+            src: this.describeAudioUrl(this.audio.currentSrc || this.audio.src),
+            paused: this.audio.paused,
+            muted: this.audio.muted,
+            volume: this.audio.volume,
+            readyState: this.audio.readyState,
+            networkState: this.audio.networkState
+        });
+
+        // 先以静音状态启动。浏览器通常允许静音自动播放；启动成功后
+        // 再解除静音，控制页的远程指令也不需要把用户手势跨页面传递。
+        const previousMuted = this.audio.muted;
+        this.audio.muted = true;
+        try {
+            await this.audio.play();
+            this.audio.muted = false;
+            this.audioUnlockRequired = false;
+            this.updateAudioUnlockPrompt();
+            this.publishState();
+            this.debugLog('静音启动成功并已恢复声音', { reason, mutedBootstrap: true });
+            return true;
+        } catch (error) {
+            this.audio.muted = previousMuted;
+            this.debugLog('静音启动失败，尝试直接有声播放', {
+                reason,
+                name: error.name,
+                message: error.message
+            });
+        }
+
+        try {
+            await this.audio.play();
+            this.audio.muted = false;
+            this.audioUnlockRequired = false;
+            this.updateAudioUnlockPrompt();
+            this.publishState();
+            this.debugLog('有声播放成功', { reason, mutedBootstrap: false });
+            return true;
+        } catch (error) {
+            this.audio.muted = previousMuted;
+            this.audioUnlockRequired = true;
+            this.updateAudioUnlockPrompt();
+            this.publishState();
+            this.debugLog('有声播放也失败', {
+                reason,
+                name: error.name,
+                message: error.message
+            });
+            return false;
+        }
+    }
+
     updateNowPlaying(song, requester = '') {
         const name = document.getElementById('nowSong');
         const artist = document.getElementById('nowArtist');
@@ -485,7 +693,14 @@ class MusicPlayer {
         const toggle = document.getElementById('togglePlayBtn');
         if (status) status.textContent = state;
         if (toggle) toggle.textContent = state === '播放中' ? '暂停' : '播放';
+        this.updateAudioUnlockPrompt();
         this.publishState();
+    }
+
+    updateAudioUnlockPrompt() {
+        const prompt = document.getElementById('audioUnlockPrompt');
+        if (!prompt) return;
+        prompt.hidden = this.isMirrorMode || !this.audioUnlockRequired;
     }
 
     updateQueueView() {

@@ -14,6 +14,32 @@ class WyMusicServer {
         }
     })();
 
+    constructor() {
+        this.debug = this.getDebugMode();
+    }
+
+    getDebugMode() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        const value = new URLSearchParams(query).get('debug') || '';
+        return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+    }
+
+    debugLog(label, value) {
+        if (!this.debug) return;
+        if (typeof value === 'undefined') console.debug(`[NeteaseMusic][debug] ${label}`);
+        else console.debug(`[NeteaseMusic][debug] ${label}`, value);
+    }
+
+    describeUrl(url) {
+        if (!url) return '';
+        try {
+            const parsed = new URL(url, window.location.href);
+            return `${parsed.origin}${parsed.pathname}`;
+        } catch (_) {
+            return '[无法解析的地址]';
+        }
+    }
+
     // 游客登录
     async anonimousLogin() {
         let data = null;
@@ -147,94 +173,152 @@ class WyMusicServer {
         @param keyword 关键词
     */
     async getSongInfo(keyword) {
-        let song = null;
-        await axios({
-            method: "get",
-            url: this.baseUrl + "/search",
-            params: {
-                cookie: this.cookie,
-                keywords: keyword,
-                limit: 10,
-                type: 1,
-            }
-        }).then(function (resp) {
-            // 获取歌曲列表
-            let songs = resp.data.result.songs;
-            if (songs.length > 0) {
-                // 封装歌曲信息
-                song = {
-                    platform: "wy",
-                    sid: songs[0].id,
-                    sname: songs[0].name,
-                    sartist: songs[0].artists[0].name,
-                    duration: songs[0].duration / 1000,
-                };
-            }
-        }).catch(function (error) {
-            console.log("歌曲搜索失败!", error.response);
+        const startedAt = Date.now();
+        this.debugLog('歌曲搜索请求', {
+            method: 'GET',
+            url: `${this.baseUrl}/search`,
+            keywords: keyword,
+            cookiePresent: Boolean(this.cookie)
         });
-        return song;
+        try {
+            const resp = await axios({
+                method: "get",
+                url: this.baseUrl + "/search",
+                params: {
+                    cookie: this.cookie,
+                    keywords: keyword,
+                    limit: 10,
+                    type: 1,
+                }
+            });
+            const songs = resp.data?.result?.songs || [];
+            const first = songs[0];
+            const song = first ? {
+                platform: "wy",
+                sid: first.id,
+                sname: first.name,
+                sartist: first.artists?.[0]?.name || '未知歌手',
+                duration: (first.duration || 0) / 1000,
+            } : null;
+            this.debugLog('歌曲搜索响应', {
+                status: resp.status,
+                code: resp.data?.code,
+                count: songs.length,
+                song: song ? { sid: song.sid, sname: song.sname, artist: song.sartist } : null,
+                elapsedMs: Date.now() - startedAt
+            });
+            return song;
+        } catch (error) {
+            this.debugLog('歌曲搜索失败', {
+                status: error.response?.status,
+                response: error.response?.data,
+                message: error.message,
+                elapsedMs: Date.now() - startedAt
+            });
+            console.log("歌曲搜索失败!", error.response?.data || error.message);
+            return null;
+        }
     }
 
     /* 获取歌曲链接
         @param songId 歌曲Id
     */
     async getSongUrl(songId) {
-        let url = null;
-        await axios({
-            method: "get",
-            url: this.baseUrl + "/song/url/v1",
-            params: {
-                cookie: this.cookie,
-                id: songId,
-                level: "standard",
-            }
-        }).then(function (resp) {
-            if (resp.data.code < 0) {
-                console.log("歌曲链接获取失败!", resp.data.message);
-            } else if (resp.data.data[0].url) {
-                url = resp.data.data[0].url;
-            }
-        }).catch(function (error) {
-            console.log("歌曲链接获取失败!", error.message);
+        const startedAt = Date.now();
+        this.debugLog('歌曲播放地址请求', {
+            method: 'GET',
+            url: `${this.baseUrl}/song/url/v1`,
+            songId,
+            level: 'standard',
+            cookiePresent: Boolean(this.cookie)
         });
-        return url;
+        try {
+            const resp = await axios({
+                method: "get",
+                url: this.baseUrl + "/song/url/v1",
+                params: {
+                    cookie: this.cookie,
+                    id: songId,
+                    level: "standard",
+                }
+            });
+            const payload = resp.data || {};
+            const item = payload.data?.[0] || null;
+            const url = item?.url || null;
+            this.debugLog('歌曲播放地址响应', {
+                status: resp.status,
+                code: payload.code,
+                message: payload.message || '',
+                songId,
+                hasUrl: Boolean(url),
+                audioUrl: this.describeUrl(url),
+                elapsedMs: Date.now() - startedAt
+            });
+            if (payload.code < 0) console.log("歌曲链接获取失败!", payload.message);
+            return url;
+        } catch (error) {
+            this.debugLog('歌曲播放地址失败', {
+                songId,
+                status: error.response?.status,
+                response: error.response?.data,
+                message: error.message,
+                elapsedMs: Date.now() - startedAt
+            });
+            console.log("歌曲链接获取失败!", error.response?.data || error.message);
+            return null;
+        }
     }
 
     /* 获取歌单列表 
         @param listId 歌单Id
     */
     async getSongList(listId) {
-        let songList = new Array();
-        await axios({
-            method: "get",
-            url: this.baseUrl + "/playlist/track/all",
-            params: {
-                cookie: this.cookie,
-                id: listId
-            }
-        }).then(async function (resp) {
-            let songs = resp.data.songs;
-            // 获取歌单的所有歌曲
-            for (let i = 0; i < songs.length; i++) {
-                let song = {
-                    uid: 0,
-                    uname: "空闲歌单",
-                    song: {
-                        platform: "wy",
-                        sid: songs[i].id,
-                        url: null,
-                        sname: songs[i].name,
-                        sartist: songs[i].ar[0].name,
-                        // duration: songs[0].duration / 1000 ,
-                    }
-                }
-                songList.push(song);
-            }
-        }).catch(function (error) {
-            console.log("歌单信息获取失败!", error.response);
+        const startedAt = Date.now();
+        this.debugLog('歌单请求', {
+            method: 'GET',
+            url: `${this.baseUrl}/playlist/track/all`,
+            listId,
+            cookiePresent: Boolean(this.cookie)
         });
-        return songList;
+        try {
+            const resp = await axios({
+                method: "get",
+                url: this.baseUrl + "/playlist/track/all",
+                params: {
+                    cookie: this.cookie,
+                    id: listId
+                }
+            });
+            const songs = resp.data?.songs || [];
+            const songList = songs.map(item => ({
+                uid: 0,
+                uname: "空闲歌单",
+                song: {
+                    platform: "wy",
+                    sid: item.id,
+                    url: null,
+                    sname: item.name,
+                    sartist: item.ar?.[0]?.name || '未知歌手',
+                }
+            }));
+            this.debugLog('歌单响应', {
+                status: resp.status,
+                listId,
+                count: songList.length,
+                elapsedMs: Date.now() - startedAt
+            });
+            return songList;
+        } catch (error) {
+            this.debugLog('歌单请求失败', {
+                listId,
+                status: error.response?.status,
+                response: error.response?.data,
+                message: error.message,
+                elapsedMs: Date.now() - startedAt
+            });
+            console.log("歌单信息获取失败!", error.response?.data || error.message);
+            return [];
+        }
     }
 }
 
