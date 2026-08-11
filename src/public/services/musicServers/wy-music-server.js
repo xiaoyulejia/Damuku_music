@@ -77,6 +77,7 @@ class WyMusicServer {
         await axios({
             method: "get",
             url: this.baseUrl + "/login/status",
+            timeout: 8000,
             params: {
                 cookie: this.cookie
             }
@@ -236,6 +237,7 @@ class WyMusicServer {
             const resp = await axios({
                 method: "get",
                 url: this.baseUrl + "/song/url/v1",
+                timeout: 12000,
                 params: {
                     cookie: this.cookie,
                     id: songId,
@@ -284,6 +286,7 @@ class WyMusicServer {
             const resp = await axios({
                 method: "get",
                 url: this.baseUrl + "/playlist/track/all",
+                timeout: 15000,
                 params: {
                     cookie: this.cookie,
                     id: listId

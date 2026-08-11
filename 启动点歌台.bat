@@ -1,12 +1,17 @@
 @echo off
 chcp 65001 >nul
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 set "NODE_MIN_MAJOR=18"
 set "NODE_DOWNLOAD_URL=https://nodejs.org/en/download/"
 set "NPM_MIRROR=https://registry.npmmirror.com"
 set "NPM_OFFICIAL=https://registry.npmjs.org"
+
+echo ========================================
+echo        Damuku_music 点歌台启动器
+echo ========================================
+echo.
 
 where node >nul 2>nul
 if errorlevel 1 (
@@ -15,25 +20,32 @@ if errorlevel 1 (
 
 for /f "delims=" %%v in ('node -p "process.versions.node.split('.')[0]" 2^>nul') do set "NODE_MAJOR=%%v"
 if not defined NODE_MAJOR goto :node_missing
-if %NODE_MAJOR% LSS %NODE_MIN_MAJOR% goto :node_old
+if !NODE_MAJOR! LSS !NODE_MIN_MAJOR! goto :node_old
 
 where npm >nul 2>nul
 if errorlevel 1 goto :npm_missing
 
-echo 已检测到 Node.js %NODE_MAJOR% 和 npm。
+echo 已检测到 Node.js !NODE_MAJOR! 和 npm。
 if not exist "node_modules\express\package.json" (
     echo 首次运行，使用国内镜像安装依赖：%NPM_MIRROR%
-    call npm install --registry=%NPM_MIRROR%
+    call npm.cmd install --registry=%NPM_MIRROR%
     if errorlevel 1 (
         echo 国内镜像安装失败，正在切换 npm 官方源重试...
-        call npm install --registry=%NPM_OFFICIAL%
+        call npm.cmd install --registry=%NPM_OFFICIAL%
         if errorlevel 1 goto :install_failed
     )
 )
 
-call npm run launch
-pause
-exit /b %errorlevel%
+echo.
+echo 正在启动点歌台服务；如果服务已经运行，启动器会直接复用它。
+call npm.cmd run launch
+set "EXIT_CODE=!ERRORLEVEL!"
+if not "!EXIT_CODE!"=="0" (
+    echo.
+    echo 点歌台启动失败，退出码：!EXIT_CODE!
+    pause
+)
+exit /b !EXIT_CODE!
 
 :node_missing
 echo 未检测到 Node.js。

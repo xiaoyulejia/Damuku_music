@@ -96,7 +96,7 @@
 <body>
 <main>
     <h1>点歌台启动器</h1>
-    <p>输入 B 站直播间号，生成 OBS 播放页面和控制页面。两个页面应使用同一个房间号。</p>
+    <p>输入 B 站直播间号，生成一组 OBS 播放页面和控制页面。OBS 播放页面是唯一的实际播放器，控制页面只同步它的状态。</p>
 
     <form id="roomForm" class="room-form">
         <input id="roomId" name="roomid" inputmode="numeric" autocomplete="off" placeholder="例如：4646297" aria-label="B站直播间号">
@@ -137,13 +137,18 @@
         || new URLSearchParams(location.search).get('room_id');
 
     function buildUrl(query) {
-        return new URL(`./?${new URLSearchParams(query).toString()}`, location.href).href;
+        const base = new URL(location.href);
+        // 直播姬部分版本对 localhost 的回环解析不稳定，127.0.0.1 更可靠。
+        if (base.hostname === 'localhost') base.hostname = '127.0.0.1';
+        return new URL(`./?${new URLSearchParams(query).toString()}`, base.href).href;
     }
 
     function renderLinks(roomId) {
-        const obsUrl = buildUrl({ roomid: roomId });
-        const controlUrl = buildUrl({ roomid: roomId, livemode: 'false' });
-        const settingsUrl = new URL(`./settings.html?roomid=${encodeURIComponent(roomId)}`, location.href).href;
+        const obsUrl = buildUrl({ roomid: roomId, source: 'obs' });
+        const controlUrl = buildUrl({ roomid: roomId, livemode: 'false', source: 'control' });
+        const settingsBase = new URL(location.href);
+        if (settingsBase.hostname === 'localhost') settingsBase.hostname = '127.0.0.1';
+        const settingsUrl = new URL(`./settings.html?roomid=${encodeURIComponent(roomId)}`, settingsBase.href).href;
         const obsLink = document.getElementById('obsLink');
         const controlLink = document.getElementById('controlLink');
         obsLink.href = obsUrl;

@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260810-26";
-import publicMethod from "../utils/common.js?v=20260810-26";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-26";
+import musicPlayer from "./music-player.js?v=20260812-4";
+import publicMethod from "../utils/common.js?v=20260810-41";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
 import danmuServer from "../services/danmuServers/danmu-server.js?v=20260810-25";
 
 /* 在此处启动弹幕服务 */
@@ -74,13 +74,7 @@ class DanmuConfiger {
             // 添加点歌信息到点歌列表  
             musicPlayer.addOrder(order);
 
-            if(musicPlayer.orderList[0].song.sid == order.song.sid){
-                // 如果没有点歌，则直接播放该歌曲
-                musicPlayer.play(order.song, order.uname);
-            }else if (musicPlayer.orderList.length > 0 && musicPlayer.orderList[0].uid == 0) {
-                // 如果当前点歌列表第一首是空闲歌单，则播放下一首
-                musicPlayer.playNext();
-            }
+            // 点歌只提交给后端，当前歌曲、队列位置和是否立即播放由后端统一决定。
 
         } else if (danmuMsg == "切歌") {
 

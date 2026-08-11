@@ -82,7 +82,13 @@ if (isMountPath(webapiConfig.netease_api)) {
             res.status(result.status).json(result.body);
         } catch (error) {
             console.error('网易云API调用失败:', error);
-            res.status(500).json({ error: error.message });
+            const status = Number(error?.status || error?.response?.status) || 502;
+            const detail = error?.body || error?.response?.data || error?.message || String(error);
+            res.status(status).json({
+                code: -1,
+                message: '网易云接口请求失败',
+                detail
+            });
         }
     });
     console.log(`网易云音乐API服务已挂载：http://localhost:${config.web_server_port}${BASE_PATH}${neteasePath}`);

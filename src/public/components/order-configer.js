@@ -1,4 +1,4 @@
-import publicMethod from "../utils/common.js?v=20260810-26";
+import publicMethod from "../utils/common.js?v=20260810-41";
 
 function readArray(key) {
     try {
@@ -7,6 +7,15 @@ function readArray(key) {
     } catch (_) {
         return [];
     }
+}
+
+function isMirrorPage() {
+    const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+    const params = new URLSearchParams(query);
+    const role = (params.get('source') || '').toLowerCase();
+    if (params.get('settings') === '1') return true;
+    if (['monitor', 'control', 'preview'].includes(role)) return true;
+    return ['0', 'false', 'no', 'off'].includes((params.get('livemode') || 'true').toLowerCase());
 }
 
 /**
@@ -58,7 +67,8 @@ class OrderConfiger {
         this.renderHistoryLists();
 
         this.addListener();
-        this.publishSharedState();
+        // 控制页只能等待 OBS 的服务端状态，不能用本地旧配置初始化并覆盖播放端。
+        if (!isMirrorPage()) this.publishSharedState();
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.order);
         });

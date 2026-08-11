@@ -1,15 +1,24 @@
-import musicPlayer from './components/music-player.js?v=20260810-26';
-import orderConfiger from './components/order-configer.js?v=20260810-26';
-import loginConfiger from './components/login-configer.js?v=20260810-26'
-import danmuConfiger from './components/danmu-configer.js?v=20260810-26';
-import publicMethod from './utils/common.js?v=20260810-26';
+import musicPlayer from './components/music-player.js?v=20260812-4';
+import orderConfiger from './components/order-configer.js?v=20260810-41';
+import loginConfiger from './components/login-configer.js?v=20260810-42'
+import danmuConfiger from './components/danmu-configer.js?v=20260810-41';
+import publicMethod from './utils/common.js?v=20260810-41';
 
-function initializeMainPage() {
+async function initializeMainPage() {
 
     const normalizedQuery = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
     const pageParams = new URLSearchParams(normalizedQuery);
     const settingsOnly = pageParams.get('settings') === '1';
-    const liveMode = !settingsOnly && !['0', 'false', 'no', 'off'].includes((pageParams.get('livemode') || 'true').toLowerCase());
+    const pageRole = (pageParams.get('source') || '').toLowerCase();
+    const requestedLiveMode = !['0', 'false', 'no', 'off'].includes((pageParams.get('livemode') || 'true').toLowerCase());
+    // source=obs 页面即使因为已有播放端而降级为监控，也保持 OBS 的纯列表布局。
+    const obsDisplayMode = !settingsOnly && !['monitor', 'control', 'preview'].includes(pageRole) && requestedLiveMode;
+    let liveMode = obsDisplayMode;
+
+    // 页面可能来自浏览器缓存，而 Node 服务已经被关闭。先独立探测后端，
+    // 不让后续按钮表现成“点击无反应”。遮罩只保留重新检查按钮。
+    const backendGuard = createBackendGuard(pageParams);
+    backendGuard.start();
 
     const readFlag = (key, defaultValue) => {
         const value = localStorage.getItem(key);
@@ -132,9 +141,24 @@ function initializeMainPage() {
         }
     }
 
-    // 启动弹幕连接
-    if (!settingsOnly && liveMode) danmuConfiger.startDanmu();
-    if (!settingsOnly && !liveMode) musicPlayer.requestSharedState();
+    // 等待播放端租约确认后再启动弹幕和自动歌单。第二个打开的播放链接
+    // 会在这里已经降级成监控端，不会再各自加载一份空闲歌单。
+    await musicPlayer.ready;
+    const playbackMode = !settingsOnly && !musicPlayer.isMirrorMode;
+    liveMode = obsDisplayMode;
+    applyAppearance();
+    let playbackStarted = false;
+    const startPlaybackServices = () => {
+        if (settingsOnly || musicPlayer.isMirrorMode || playbackStarted) return;
+        playbackStarted = true;
+        danmuConfiger.startDanmu();
+        if (!musicPlayer.idleSongList.length && !musicPlayer.audio.src) {
+            loginConfiger.loadSongList();
+        }
+    };
+    window.addEventListener('bilibili-ordersong-publisher-claimed', startPlaybackServices);
+    if (playbackMode) startPlaybackServices();
+    if (!settingsOnly && !playbackMode) musicPlayer.requestSharedState();
 
     // 播放控制。浏览器通常不允许弹幕事件直接触发声音，用户点击一次即可解锁。
     const unlockAudio = () => musicPlayer.unlockPlayback();
@@ -173,14 +197,6 @@ function initializeMainPage() {
             publicMethod.pageAlert('请输入有效歌单ID');
             return;
         }
-        if (musicPlayer.isMirrorMode) {
-            loginConfiger.songListId = listId;
-            loginConfiger.addSongListHistory(listId);
-            localStorage.setItem('songListId', listId);
-            musicPlayer.sendCommand('loadSongList', listId);
-            publicMethod.pageAlert(`已请求 OBS 加载歌单：${listId}`);
-            return;
-        }
         loginConfiger.loadSongList(listId);
     };
     bindLoginButton('loadSongList', () => requestSongList());
@@ -196,17 +212,82 @@ function initializeMainPage() {
     bindLoginButton('deleteSongListHistory', () => loginConfiger.deleteSongListHistory());
     bindLoginButton('clearSongListHistory', () => loginConfiger.clearSongListHistory());
 
-    // 加载歌单
-    if (!settingsOnly && liveMode) loginConfiger.loadSongList();
+}
+
+function createBackendGuard(pageParams) {
+    const overlay = document.getElementById('backendOfflineOverlay');
+    const title = document.getElementById('backendOfflineTitle');
+    const message = document.getElementById('backendOfflineMessage');
+    const retryButton = document.getElementById('backendRetryBtn');
+    const interactiveElements = [...document.querySelectorAll('button, input, select, textarea')]
+        .filter(element => element !== retryButton && !element.closest('#backendOfflineOverlay'));
+    const configuredSyncBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+    const syncBase = configuredSyncBase ||
+        new URL('./bili-api', window.location.href).pathname.replace(/\/$/, '');
+    const roomId = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
+    let available = false;
+    let checking = false;
+
+    const setAvailability = (nextAvailable) => {
+        available = nextAvailable;
+        window.__backendAvailable = available;
+        document.body.classList.toggle('backendOffline', !available);
+        if (overlay) overlay.hidden = available;
+        interactiveElements.forEach(element => {
+            if (!element.dataset.backendGuardOriginalDisabled) {
+                element.dataset.backendGuardOriginalDisabled = element.disabled ? '1' : '0';
+            }
+            element.disabled = !available || element.dataset.backendGuardOriginalDisabled === '1';
+        });
+    };
+
+    const check = async () => {
+        if (checking) return available;
+        checking = true;
+        // 在线状态下不要先切成离线再等待请求，否则每 5 秒都会闪一下遮罩，
+        // 还会短暂禁用播放器按钮。只有首次检查或上次已离线时显示检查状态。
+        if (!available) {
+            if (title) title.textContent = '正在检查后端服务';
+            if (message) message.textContent = '请稍候，正在确认点歌台服务是否运行。';
+            setAvailability(false);
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        try {
+            const response = await fetch(`${syncBase}/live/health?room_id=${encodeURIComponent(roomId)}`, {
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            const result = await response.json();
+            if (!response.ok || result.code !== 0) throw new Error('后端健康检查失败');
+            setAvailability(true);
+            return true;
+        } catch (_) {
+            if (title) title.textContent = '后端服务未运行';
+            if (message) message.textContent = '点歌台后端没有启动，当前页面操作已禁用。请先启动 Node 服务后点击重新检查。';
+            setAvailability(false);
+            return false;
+        } finally {
+            clearTimeout(timeout);
+            checking = false;
+        }
+    };
+
+    retryButton?.addEventListener('click', check);
+    return {
+        start() {
+            check();
+            window.setInterval(check, 5000);
+        },
+        check
+    };
 }
 
 // 模块脚本可能在页面 load 事件之后才执行，不能只依赖 window.onload。
 const runMainInitialization = () => {
-    try {
-        initializeMainPage();
-    } catch (error) {
+    Promise.resolve(initializeMainPage()).catch(error => {
         console.error('页面初始化失败', error);
-    }
+    });
 };
 
 if (document.readyState === 'loading') {

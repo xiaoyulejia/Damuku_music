@@ -17,6 +17,75 @@ body, html{
     background: transparent;
     font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
+
+.backendOfflineOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(8, 10, 20, .84);
+    backdrop-filter: blur(8px);
+}
+
+.backendOfflineOverlay[hidden] { display: none; }
+
+.backendOfflineCard {
+    width: min(420px, 100%);
+    padding: 26px 24px 22px;
+    border: 1px solid rgba(255, 178, 104, .42);
+    border-radius: 18px;
+    color: #fff;
+    text-align: center;
+    background: #1c2033;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+}
+
+.backendOfflineIcon {
+    width: 36px;
+    height: 36px;
+    margin: 0 auto 12px;
+    border-radius: 50%;
+    color: #2b1d10;
+    background: #ffbf75;
+    font-size: 24px;
+    font-weight: 800;
+    line-height: 36px;
+}
+
+.backendOfflineCard h2 {
+    margin: 0 0 8px;
+    font-size: 18px;
+}
+
+.backendOfflineCard p {
+    margin: 0 0 18px;
+    color: #c8cbe0;
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.backendOfflineCard button {
+    min-height: 36px;
+    padding: 0 18px;
+    border: 0;
+    border-radius: 9px;
+    color: #2b1d10;
+    background: #ffbf75;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+}
+
+body.backendOffline button:not(#backendRetryBtn),
+body.backendOffline input,
+body.backendOffline select,
+body.backendOffline textarea {
+    cursor: not-allowed !important;
+}
+
 .main{
     width: min(420px, calc(100% - 24px));
     height: 100%;
@@ -255,13 +324,25 @@ body.liveMode .volumeControl {
     width: 100%;
 }
 
-/* 直播模式默认只展示点歌队列，观众不会看到播放器控制按钮。 */
-body.liveMode:not(.liveShowPlayer) .playerCard {
+/* OBS 直播画面固定只展示点歌队列，不受浏览器本地显示开关影响。 */
+body.liveMode .playerCard {
+    display: none !important;
+}
+
+body.liveMode .playerActions,
+body.liveMode .volumeControl,
+body.liveMode .alertBox,
+body.liveMode .setting {
     display: none;
 }
 
-body.liveMode:not(.liveShowControls) .playerActions {
-    display: none;
+body.liveMode .queueHeader {
+    display: flex !important;
+}
+
+body.liveMode .orderTable thead th:nth-child(3),
+body.liveMode .orderTable tbody td:nth-child(3) {
+    display: table-cell !important;
 }
 
 /* 直播/OBS页面使用独立设置页，不在顶部播放卡片中显示设置入口。 */
@@ -275,10 +356,6 @@ body.liveMode:not(.liveShowQueueHeader) .queueHeader {
 
 body.liveMode:not(.liveShowRequester) .orderTable thead th:nth-child(3),
 body.liveMode:not(.liveShowRequester) .orderTable tbody td:nth-child(3) {
-    display: none;
-}
-
-body.liveMode:not(.liveShowAlerts) .alertBox {
     display: none;
 }
 

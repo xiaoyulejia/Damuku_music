@@ -1,6 +1,6 @@
-import orderConfiger from "./order-configer.js?v=20260810-26";
-import publicMethod from "../utils/common.js?v=20260810-26";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-26";
+import orderConfiger from "./order-configer.js?v=20260810-41";
+import publicMethod from "../utils/common.js?v=20260810-41";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
 
 /**
  * 音乐播放器
@@ -29,9 +29,17 @@ class MusicPlayer {
     // 待执行标记：切歌期间再次请求切歌时，标记为待执行，避免操作丢失
     pendingNext = false;
 
+    // 播放请求序号，避免旧歌曲的异步链接请求晚返回后覆盖新歌。
+    playbackRequestId = 0;
+    errorNextTimer = null;
+    overLimitTriggered = false;
+
     // 当前播放歌曲，用于同步 H5 播放卡片
     currentSong = null;
     currentRequester = '';
+    // audio.src 在切歌请求期间可能仍然是上一首，不能只比较 currentSong，
+    // 否则 applySharedState 先覆盖 currentSong 后会误判为“同一首歌”。
+    loadedAudioSongId = '';
     playerState = '等待播放';
 
     // livemode=false 页面作为 OBS 播放页的镜像，不再创建第二个播放器
@@ -41,17 +49,23 @@ class MusicPlayer {
     statePollTimer = null;
     statePulling = false;
     statePushQueue = Promise.resolve();
+    lastSharedRevision = 0;
     commandPulling = false;
-    stateStorageKey = 'bilibiliOrdersongSharedState';
     lastSharedStateAt = 0;
     commandPollTimer = null;
+    credentialsPollTimer = null;
     commandStartedAt = Date.now();
     lastCommandId = 0;
     handledCommandIds = new Set();
     volumePercent = 50;
     publisherId = '';
     publisherStartedAt = Date.now();
-    acceptedPublisherId = '';
+    publisherRetryTimer = null;
+    publisherClaiming = false;
+    requestedPublisher = false;
+    credentialsPushTimer = null;
+    ready = Promise.resolve();
+    publisherClaimed = false;
     debug = false;
     audioUnlockRequired = false;
     sharedAudioUnlockRequired = false;
@@ -59,19 +73,20 @@ class MusicPlayer {
     constructor() {
         this.debug = this.getDebugMode();
         this.isMirrorMode = !this.getPageLiveMode();
+        this.requestedPublisher = !this.isMirrorMode;
         const roomId = this.getPageRoomId() || 'default';
-        this.stateStorageKey = `bilibiliOrdersongSharedState:${roomId}`;
         if (!this.isMirrorMode) {
             this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             this.publisherStartedAt = Date.now();
         }
         this.volumePercent = Number(localStorage.getItem('playerVolume') || 50);
         this.applyVolume(this.volumePercent);
-        this.initStateSync();
+        this.ready = this.initStateSync();
         this.addListener();
         window.addEventListener('bilibili-ordersong-settings-changed', event => {
             if (!this.isMirrorMode) {
-                this.publishState();
+                // 播放端租约确认前，禁止本地旧配置抢先覆盖服务端房间状态。
+                if (this.publisherClaimed) this.publishState();
                 return;
             }
             this.sendCommand('settings', {
@@ -111,10 +126,16 @@ class MusicPlayer {
         }
     }
 
+    getPageRole() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        return (new URLSearchParams(query).get('source') || '').toLowerCase();
+    }
+
     getPageLiveMode() {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         const params = new URLSearchParams(query);
         if (params.get('settings') === '1') return false;
+        if (['monitor', 'control', 'preview'].includes(this.getPageRole())) return false;
         return !['0', 'false', 'no', 'off'].includes((params.get('livemode') || 'true').toLowerCase());
     }
 
@@ -123,7 +144,14 @@ class MusicPlayer {
         return new URLSearchParams(query).get('roomid') || new URLSearchParams(query).get('room_id') || '';
     }
 
-    initStateSync() {
+    getSyncApiBase() {
+        const configured = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        if (configured) return configured;
+        // 直播姬内置 WebView 可能执行配置脚本较晚，使用当前页面路径兜底。
+        return new URL('./bili-api', window.location.href).pathname.replace(/\/$/, '');
+    }
+
+    async initStateSync() {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         if (new URLSearchParams(query).get('settings') === '1') return;
         if (typeof BroadcastChannel === 'function') {
@@ -131,32 +159,145 @@ class MusicPlayer {
             this.stateChannel.onmessage = event => this.handleStateMessage(event.data);
         }
         window.addEventListener('storage', event => {
-            if (this.isMirrorMode && event.key === this.stateStorageKey && event.newValue) {
-                try { this.applySharedState(JSON.parse(event.newValue)); } catch (_) { }
-            }
+            // 播放状态只接受服务端同步，不能让控制页的旧 localStorage 覆盖 OBS 状态。
         });
         if (this.isMirrorMode) {
-            this.requestSharedState();
-            this.statePollTimer = setInterval(() => this.pullSharedState(), 1000);
+            this.pushSharedCredentials();
+            await this.startMirrorSync();
         } else {
+            const claimResult = await this.claimPublisher();
+            if (!claimResult.claimed) {
+                this.becomeMirrorMode(claimResult.state, claimResult.reason);
+                return false;
+            }
+            this.publisherClaimed = true;
+            if (claimResult.state) this.applySharedState(claimResult.state);
+            await this.pullSharedCredentials();
+            this.credentialsPollTimer = setInterval(() => this.pullSharedCredentials(), 3000);
+            if (claimResult.state?.currentSong) {
+                await this.playCanonicalState(claimResult.state, 'publisher-start');
+            }
             this.publishState();
             this.stateTimer = setInterval(() => this.publishState(), 1000);
             this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
         }
+        return true;
     }
 
-    requestSharedState() {
+    async startMirrorSync() {
+        await this.requestSharedState();
+        if (!this.statePollTimer) {
+            this.statePollTimer = setInterval(() => this.pullSharedState(), 1000);
+        }
+        // 控制页可能在后端启动前就已打开，服务恢复后要重新推送本地登录态。
+        if (!this.requestedPublisher && !this.credentialsPushTimer) {
+            this.credentialsPushTimer = setInterval(() => this.pushSharedCredentials(), 3000);
+        }
+    }
+
+    async claimPublisher() {
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return { claimed: true };
         try {
-            const state = JSON.parse(localStorage.getItem(this.stateStorageKey) || 'null');
-            if (state && this.acceptSharedPublisher(state)) this.applySharedState(state);
-        } catch (_) { }
-        this.stateChannel?.postMessage({ type: 'request-state' });
-        this.pullSharedState();
+            const response = await fetch(`${apiBase}/live/sync-claim`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ room_id: roomId, publisherId: this.publisherId }),
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            this.debugLog('播放端租约结果', {
+                claimed: result.claimed,
+                ignored: result.ignored,
+                reason: result.reason,
+                publisherId: result.data?.publisherId
+            });
+            return {
+                claimed: result.code === 0 && result.claimed !== false,
+                state: result.data || null,
+                reason: result.reason || 'publisher-locked'
+            };
+        } catch (error) {
+            // 服务端同步不可用时保留本地播放能力，恢复连接后再通过心跳接管。
+            this.debugLog('播放端租约请求失败，暂按播放端运行', {
+                name: error.name,
+                message: error.message
+            });
+            return { claimed: true, unavailable: true };
+        }
+    }
+
+    becomeMirrorMode(state = null, reason = 'publisher-locked') {
+        if (this.isMirrorMode) return;
+        this.isMirrorMode = true;
+        this.publisherClaimed = false;
+        if (this.stateTimer) clearInterval(this.stateTimer);
+        if (this.commandPollTimer) clearInterval(this.commandPollTimer);
+        if (this.credentialsPollTimer) clearInterval(this.credentialsPollTimer);
+        if (this.credentialsPushTimer) clearInterval(this.credentialsPushTimer);
+        this.stateTimer = null;
+        this.commandPollTimer = null;
+        this.credentialsPollTimer = null;
+        this.credentialsPushTimer = null;
+        this.idleSongList = [];
+        this.idleIndex = -1;
+        this.audio.pause();
+        this.audio.removeAttribute('src');
+        this.loadedAudioSongId = '';
+        this.debugLog('当前页面降级为监控/控制端', { reason, publisherId: state?.publisherId });
+        if (state) this.applySharedState(state);
+        this.startMirrorSync();
+        this.startPublisherRetry();
+    }
+
+    startPublisherRetry() {
+        if (!this.requestedPublisher || this.publisherRetryTimer) return;
+        this.publisherRetryTimer = setInterval(() => this.tryReclaimPublisher(), 3000);
+    }
+
+    async tryReclaimPublisher() {
+        if (!this.requestedPublisher || !this.isMirrorMode || this.publisherClaiming) return;
+        this.publisherClaiming = true;
+        this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        this.publisherStartedAt = Date.now();
+        try {
+            const claimResult = await this.claimPublisher();
+            if (!claimResult.claimed || claimResult.unavailable) return;
+
+            this.isMirrorMode = false;
+            this.publisherClaimed = true;
+            if (this.credentialsPushTimer) clearInterval(this.credentialsPushTimer);
+            this.credentialsPushTimer = null;
+            if (this.statePollTimer) clearInterval(this.statePollTimer);
+            this.statePollTimer = null;
+            if (claimResult.state) this.applySharedState(claimResult.state);
+            await this.pullSharedCredentials();
+            if (claimResult.state?.currentSong) {
+                await this.playCanonicalState(claimResult.state, 'publisher-reclaim');
+            }
+            if (!this.credentialsPollTimer) {
+                this.credentialsPollTimer = setInterval(() => this.pullSharedCredentials(), 3000);
+            }
+            this.publishState();
+            this.stateTimer = setInterval(() => this.publishState(), 1000);
+            this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
+            this.debugLog('已重新抢回 OBS 播放端租约', { publisherId: this.publisherId });
+            window.dispatchEvent(new CustomEvent('bilibili-ordersong-publisher-claimed'));
+            clearInterval(this.publisherRetryTimer);
+            this.publisherRetryTimer = null;
+        } finally {
+            this.publisherClaiming = false;
+        }
+    }
+
+    async requestSharedState() {
+        await this.pullSharedState();
     }
 
     async pullSharedState() {
         if (this.statePulling) return;
-        const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId) return;
         this.statePulling = true;
@@ -165,25 +306,71 @@ class MusicPlayer {
                 cache: 'no-store'
             });
             const result = await response.json();
-            if (result.code === 0 && result.data && this.acceptSharedPublisher(result.data)) {
+            if (result.code === 0 && result.data) {
+                // 服务端是唯一状态源。新的 OBS 播放端接管房间后，控制页必须
+                // 接受它的新 publisherId，不能被旧 localStorage 卡住。
                 this.applySharedState(result.data);
             }
         } catch (_) {
-            // 服务器端点不可用时，仍保留同浏览器内的 BroadcastChannel/localStorage 同步。
+            // 服务端暂时不可用时保留当前画面，恢复连接后由下一次轮询更新。
         } finally {
             this.statePulling = false;
         }
     }
 
+    async pushSharedCredentials() {
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        const cookie = musicServer.getServer('wy')?.cookie;
+        if (!apiBase || !roomId || typeof cookie !== 'string' || !cookie.trim()) return false;
+        try {
+            const response = await fetch(`${apiBase}/live/sync-credentials`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ room_id: roomId, netease_cookie: cookie }),
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            this.debugLog('网易云登录态已同步', { hasCookie: Boolean(result.data?.hasNeteaseCookie) });
+            return response.ok && result.code === 0;
+        } catch (error) {
+            this.debugLog('网易云登录态同步失败', { message: error.message });
+            return false;
+        }
+    }
+
+    async pullSharedCredentials() {
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return false;
+        try {
+            const response = await fetch(`${apiBase}/live/sync-credentials?room_id=${encodeURIComponent(roomId)}`, {
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            const cookie = result.data?.netease_cookie;
+            if (result.code !== 0 || typeof cookie !== 'string' || !cookie.trim()) return false;
+            const server = musicServer.getServer('wy');
+            if (server.cookie === cookie) return false;
+            server.cookie = cookie;
+            localStorage.setItem('wycookie', cookie);
+            this.debugLog('已接收共享网易云登录态', { hasCookie: true });
+            window.dispatchEvent(new CustomEvent('bilibili-ordersong-credentials-changed'));
+            return true;
+        } catch (error) {
+            this.debugLog('读取共享网易云登录态失败', { message: error.message });
+            return false;
+        }
+    }
+
     handleStateMessage(message) {
         if (!message) return;
-        if (message.type === 'state' && this.isMirrorMode) {
-            if (!this.acceptSharedPublisher(message.state)) return;
-            this.applySharedState(message.state);
-        } else if (message.type === 'request-state' && !this.isMirrorMode) {
+        if (message.type === 'request-state' && !this.isMirrorMode) {
             this.publishState();
         } else if (message.type === 'command' && !this.isMirrorMode) {
-            this.handleCommand(message);
+            // 命令必须等后端回填 canonical state 后再执行，不能直接处理
+            // BroadcastChannel 的原始消息，否则会出现“先本地播放、后又被旧状态覆盖”。
+            if (message.sequence) this.handleCommand(message);
         }
     }
 
@@ -202,23 +389,51 @@ class MusicPlayer {
                 this.handledCommandIds.delete(this.handledCommandIds.values().next().value);
             }
         }
-        if (message.command === 'next') this.playNext();
-        if (message.command === 'toggle') this.togglePlayback();
-        if (message.command === 'volume') this.setVolume(message.value);
-        if (message.command === 'unlockAudio' && !this.isMirrorMode) {
-            this.unlockPlayback();
+        if (message.state) this.applySharedState(message.state);
+        if (this.isMirrorMode) return;
+        if (['next', 'addOrder', 'loadSongList', 'play'].includes(message.command)) {
+            this.playCanonicalState(message.state, message.command);
         }
-        if (message.command === 'loadSongList' && message.value && !this.isMirrorMode) {
-            window.dispatchEvent(new CustomEvent('bilibili-ordersong-command', {
-                detail: { command: message.command, value: message.value }
-            }));
+        if (message.command === 'toggle') {
+            if (!this.audio.src && message.state?.currentSong) {
+                this.playCanonicalState(message.state, 'toggle');
+            } else if (this.audio.paused) {
+                this.unlockPlayback();
+            } else {
+                this.audio.pause();
+            }
         }
+        if (message.command === 'pause') this.audio.pause();
+        if (message.command === 'volume') this.applyVolume(message.state?.volume ?? message.value);
+        if (message.command === 'unlockAudio') this.unlockPlayback();
         if (message.command === 'settings' && message.value) {
             window.__lastSharedSettings = message.value;
             window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
                 detail: message.value
             }));
-            this.publishState();
+        }
+    }
+
+    async playCanonicalState(state, reason = 'state') {
+        if (this.isMirrorMode) return;
+        const song = state?.currentSong || this.currentSong;
+        if (!song) {
+            this.audio.pause();
+            this.audio.removeAttribute('src');
+            this.loadedAudioSongId = '';
+            this.currentSong = null;
+            this.currentRequester = '';
+            this.updateNowPlaying(null, '');
+            this.updatePlayerState(state?.status || '等待点歌');
+            return;
+        }
+        const sameSong = this.loadedAudioSongId === String(song.sid) && Boolean(this.audio.src);
+        if (!sameSong) {
+            await this.play(song, state?.currentRequester || '');
+            return;
+        }
+        if (reason === 'toggle' || reason === 'play') {
+            if (this.audio.paused) await this.unlockPlayback();
         }
     }
 
@@ -234,6 +449,14 @@ class MusicPlayer {
             currentRequester: this.currentRequester,
             status: this.playerState || '等待播放',
             volume: this.volumePercent,
+            songListId: window.__loginSettingsState?.songListId || localStorage.getItem('songListId') || '',
+            idleSongList: this.idleSongList.map(order => ({
+                uid: 0,
+                uname: '空闲歌单',
+                song: order.song || order
+            })),
+            idleIndex: this.idleIndex,
+            idleSongCount: this.idleSongList.length,
             audioUnlockRequired: this.audioUnlockRequired,
             settings: {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
@@ -243,30 +466,37 @@ class MusicPlayer {
             publisherStartedAt: this.publisherStartedAt,
             updatedAt: Date.now()
         };
-        try { localStorage.setItem(this.stateStorageKey, JSON.stringify(state)); } catch (_) { }
-        this.stateChannel?.postMessage({ type: 'state', state });
         this.statePushQueue = this.statePushQueue
             .then(() => this.pushSharedState(state))
             .catch(() => {});
     }
 
     async pushSharedState(state) {
-        const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId) return;
         try {
-            await fetch(`${apiBase}/live/sync-state`, {
+            const response = await fetch(`${apiBase}/live/sync-state`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ room_id: roomId, state })
             });
+            const result = await response.json();
+            this.debugLog('播放状态同步响应', {
+                ignored: result.ignored,
+                reason: result.reason,
+                publisherId: result.data?.publisherId
+            });
+            if (result.ignored && result.reason === 'publisher-locked') {
+                this.becomeMirrorMode(result.data, result.reason);
+            }
         } catch (_) {
-            // 不影响本地播放，服务器同步失败时继续使用本地同步机制。
+            // 不影响本地播放，服务器恢复后由下一次心跳继续同步。
         }
     }
 
     async pushSharedCommand(command) {
-        const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId) {
             this.debugLog('控制指令未发送：缺少同步地址或房间号', { apiBase, roomId, command: command.command });
@@ -296,6 +526,12 @@ class MusicPlayer {
                 elapsedMs: Date.now() - startedAt,
                 result
             });
+            // 控制页发送点歌/切歌后，不能只等待下一轮轮询刷新界面。
+            // 后端返回的 data 是已经应用命令后的权威队列，立即应用它可以避免
+            // 控制页短暂显示旧队列，也能覆盖部分 WebView 不稳定轮询的情况。
+            if (ok && this.isMirrorMode && result?.data) {
+                this.applySharedState(result.data);
+            }
             return { ok, status: response.status, result };
         } catch (error) {
             this.debugLog('控制指令 HTTP 请求失败', {
@@ -310,7 +546,7 @@ class MusicPlayer {
 
     async pullSharedCommands() {
         if (this.commandPulling) return;
-        const apiBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId || this.isMirrorMode) return;
         this.commandPulling = true;
@@ -366,30 +602,42 @@ class MusicPlayer {
         return result;
     }
 
-    acceptSharedPublisher(state) {
-        const publisherId = String(state?.publisherId || '');
-        if (!publisherId) return !this.acceptedPublisherId;
-        if (!this.acceptedPublisherId) this.acceptedPublisherId = publisherId;
-        return this.acceptedPublisherId === publisherId;
-    }
-
     applySharedState(state) {
         if (!state) return;
+        if (state.stateRevision && state.stateRevision < this.lastSharedRevision) return;
         if (state.updatedAt && state.updatedAt < this.lastSharedStateAt) return;
+        if (state.stateRevision) this.lastSharedRevision = state.stateRevision;
         this.lastSharedStateAt = state.updatedAt || Date.now();
-        this.orderList = Array.isArray(state.queue) ? state.queue : [];
+        this.orderList = Array.isArray(state.queue)
+            ? state.queue.map(order => this.normalizeQueueOrder(order)).filter(Boolean)
+            : [];
         this.currentSong = state.currentSong || this.orderList[0]?.song || null;
         this.currentRequester = state.currentRequester || this.orderList[0]?.uname || '';
+        if (typeof state.songListId === 'string' && state.songListId) {
+            window.__sharedSongListId = state.songListId;
+        }
+        if (Array.isArray(state.idleSongList)) {
+            this.idleSongList = state.idleSongList;
+            this.idleIndex = Number.isInteger(Number(state.idleIndex)) ? Number(state.idleIndex) : -1;
+        }
         const audioUnlockRequired = Boolean(state.audioUnlockRequired);
         if (this.isMirrorMode && audioUnlockRequired && !this.sharedAudioUnlockRequired) {
             publicMethod.pageAlert('OBS 播放页被浏览器阻止自动播放，请在 OBS 播放页点击一次启用声音');
         }
         this.sharedAudioUnlockRequired = audioUnlockRequired;
         if (state.volume != null) this.applyVolume(state.volume);
-        if (state.settings) {
-            window.__lastSharedSettings = state.settings;
+        if (state.settings || state.songListId) {
+            const sharedSettings = state.settings || {};
+            const sharedLogin = {
+                ...(sharedSettings.login || {}),
+                ...(state.songListId ? { songListId: state.songListId } : {})
+            };
+            window.__lastSharedSettings = {
+                ...sharedSettings,
+                login: Object.keys(sharedLogin).length ? sharedLogin : null
+            };
             window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
-                detail: state.settings
+                detail: window.__lastSharedSettings
             }));
         }
         this.renderQueue();
@@ -397,18 +645,56 @@ class MusicPlayer {
         this.updatePlayerState(state.status || '等待 OBS 播放');
     }
 
+    getQueueDisplayList() {
+        const displayList = Array.isArray(this.orderList)
+            ? this.orderList.map(order => order?.uid == 0
+                ? { ...order, uname: '空闲歌单' }
+                : order)
+            : [];
+
+        // 队列严格按服务端 queue 顺序展示，空闲歌单只在队列确实为空时做最后兜底；
+        // 不能根据 currentSong 重新插入项目，否则切歌同步期间会改变点歌顺序。
+        if (displayList.length === 0) {
+            const idleOrder = this.idleSongList?.[this.idleIndex];
+            const song = idleOrder?.song || idleOrder ||
+                (this.currentRequester === '空闲歌单' ? this.currentSong : null);
+            if (song?.sid) {
+                displayList.push({
+                    uid: 0,
+                    uname: '空闲歌单',
+                    song
+                });
+            }
+        }
+        return displayList;
+    }
+
+    normalizeQueueOrder(order) {
+        if (!order || typeof order !== 'object') return null;
+        const song = order.song || order;
+        if (!song || song.sid == null) return null;
+        return {
+            uid: Number(order.uid) || 0,
+            uname: String(order.uname || (Number(order.uid) === 0 ? '空闲歌单' : '')),
+            song
+        };
+    }
+
     renderQueue() {
         if (!this.elem_orderList) return;
+        const displayList = this.getQueueDisplayList();
         this.elem_orderList.innerHTML = '';
-        this.elem_orderList.style.height = `${this.orderList.length * 40}px`;
-        this.orderList.forEach((order, index) => {
+        this.elem_orderList.style.height = `${displayList.length * 40}px`;
+        displayList.forEach((order, index) => {
             const tr = document.createElement('tr');
             [order.song?.sname || '', order.song?.sartist || '', order.uname || ''].forEach(value => {
                 const td = document.createElement('td');
                 td.textContent = value;
                 tr.appendChild(td);
             });
-            tr.style.top = `${40 + index * 40}px`;
+            // tbody 已经紧跟在表头后面，首行从 0 开始；再加 40px 会让
+            // 只有一首歌时整行落到 tbody 可视区域之外。
+            tr.style.top = `${index * 40}px`;
             this.elem_orderList.appendChild(tr);
         });
         this.updateQueueView();
@@ -471,7 +757,10 @@ class MusicPlayer {
                 ? ((this.audio.currentTime / duration) * progressWidth) + "px"
                 : "0px";
             // 超过歌曲限长则自动播放下一首
-            if (orderConfiger.overLimitSkip > 0 && this.audio.currentTime > orderConfiger.overLimitSkip) {
+            if (orderConfiger.overLimitSkip > 0 &&
+                this.audio.currentTime > orderConfiger.overLimitSkip &&
+                !this.overLimitTriggered) {
+                this.overLimitTriggered = true;
                 this.playNext();
             }
         });
@@ -492,7 +781,8 @@ class MusicPlayer {
             });
             this.updatePlayerState("播放错误");
             publicMethod.pageAlert("播放错误，即将播放下一首...");
-            setTimeout(() => {
+            clearTimeout(this.errorNextTimer);
+            this.errorNextTimer = setTimeout(() => {
                 // 播放下一首歌曲
                 this.playNext();
             }, 6000);
@@ -501,6 +791,10 @@ class MusicPlayer {
 
     // 播放歌曲
     async play(song, requester = '') {
+        const requestId = ++this.playbackRequestId;
+        clearTimeout(this.errorNextTimer);
+        this.errorNextTimer = null;
+        this.overLimitTriggered = false;
 
         this.currentSong = song;
         this.currentRequester = requester;
@@ -533,6 +827,7 @@ class MusicPlayer {
         });
 
         if (!songurl) {
+            if (requestId !== this.playbackRequestId) return;
             publicMethod.pageAlert("获取歌曲链接失败，即将播放下一首...");
             // 清除切歌锁，允许下一首播放
             this.isSwitching = false;
@@ -540,7 +835,19 @@ class MusicPlayer {
             return;
         }
 
+        // 旧歌曲的异步请求不能再写入 audio，避免切歌时歌名/音频错位。
+        if (requestId !== this.playbackRequestId || this.isMirrorMode) {
+            // 当前请求因切歌或租约变化而失效时，不能把播放器锁死在切歌状态。
+            if (requestId === this.playbackRequestId) {
+                this.isSwitching = false;
+                if (this.isMirrorMode) this.pendingNext = false;
+                else this._flushPending();
+            }
+            return;
+        }
+
         this.audio.src = songurl;
+        this.loadedAudioSongId = String(song.sid);
         this.debugLog('已设置 audio.src', {
             src: this.describeAudioUrl(songurl),
             muted: this.audio.muted,
@@ -570,6 +877,14 @@ class MusicPlayer {
 
         // 播放；如果浏览器拦截有声自动播放，先静音启动，再恢复声音。
         const played = await this.playAudioWithFallback('new-song');
+        if (requestId !== this.playbackRequestId || this.isMirrorMode) {
+            if (requestId === this.playbackRequestId) {
+                this.isSwitching = false;
+                if (this.isMirrorMode) this.pendingNext = false;
+                else this._flushPending();
+            }
+            return;
+        }
         if (!played) this.updatePlayerState("请点击启用声音");
 
         // 歌曲开始播放后，清除切歌锁，检查待执行
@@ -585,7 +900,9 @@ class MusicPlayer {
             return;
         }
         if (!this.audio.src) {
-            publicMethod.pageAlert("当前还没有歌曲，请先点歌");
+            publicMethod.pageAlert(this.idleSongList.length || this.orderList.length
+                ? "当前歌曲尚未开始，点击播放开始下一首"
+                : "当前没有歌曲，请先加载歌单或点歌");
             return;
         }
         try {
@@ -614,7 +931,7 @@ class MusicPlayer {
             return;
         }
         if (!this.audio.src) {
-            publicMethod.pageAlert("当前还没有歌曲，请先点歌");
+            this.sendCommand('play');
             return;
         }
         if (this.audio.paused) {
@@ -706,79 +1023,14 @@ class MusicPlayer {
     updateQueueView() {
         const count = document.getElementById('queueCount');
         const empty = document.getElementById('emptyQueue');
-        if (count) count.textContent = `${this.orderList.length} 首`;
-        if (empty) empty.style.display = this.orderList.length ? 'none' : 'block';
+        const displayCount = this.getQueueDisplayList().length;
+        if (count) count.textContent = `${displayCount} 首`;
+        if (empty) empty.style.display = displayCount ? 'none' : 'block';
     }
 
     // 播放下一首
     async playNext() {
-        if (this.isMirrorMode) {
-            this.sendCommand('next');
-            return;
-        }
-        // 互斥锁：正在切歌时，标记为待执行而非丢弃
-        if (this.isSwitching) {
-            this.pendingNext = true;
-            return;
-        }
-        this.isSwitching = true;
-
-        // 停止当前播放，防止 ended/error 事件重复触发
-        this.audio.pause();
-        this.audio.removeAttribute('src');
-
-        if (this.orderList.length > 0) {
-            // 若点歌列表存在歌曲，则删除第一首
-            this.orderList.shift();
-            this.publishState();
-
-            // 页面同步删除第一个点歌项
-            const elem = this.elem_orderList.children[0];
-
-            // 设置删除动画效果
-            elem.style.animation = "fadeOut 1s forwards";
-
-            // 延迟删除，等待动画完成
-            setTimeout(() => {
-                // 删除点歌项
-                elem.remove();
-                // 所有点歌项位置上移动一个单位
-                for (let j = 0; j < this.elem_orderList.children.length; j++) {
-                    const elem_other = this.elem_orderList.children[j];
-                    elem_other.style.top = (elem_other.offsetTop - 40) + "px";
-                }
-                this.elem_orderList.style.height = (this.orderList.length * 40) + "px";
-                this.updateQueueView();
-            }, 1000);
-        }
-
-        // 若点歌列表还有歌曲，则直接播放第一首
-        if (this.orderList.length) {
-            await this.play(this.orderList[0].song, this.orderList[0].uname);
-            return;
-        }
-
-        // 若点歌列表没有歌曲，则随机播放空闲歌单的歌曲            
-        if (!this.idleSongList.length) {
-            publicMethod.pageAlert("没有下一首可以放了>_<!");
-            this.updatePlayerState("等待下一首");
-            this.isSwitching = false;
-            this._flushPending();
-            return;
-        }
-
-        // 随机播放
-        if (this.idleIndex == this.idleSongList.length - 1) {
-            // 洗牌空闲歌单
-            this.idleSongList = publicMethod.shuffle(this.idleSongList);
-        }
-        this.idleIndex = (++this.idleIndex) % this.idleSongList.length;
-
-        // 将空闲歌单的歌曲添加到点歌列表中
-        this.addOrder(this.idleSongList[this.idleIndex]);
-
-        // 播放当前第一首歌曲
-        await this.play(this.orderList[0].song, this.orderList[0].uname);
+        this.sendCommand('next');
     }
 
     // 检查并执行待处理的切歌请求
@@ -795,26 +1047,11 @@ class MusicPlayer {
 
     // 添加点歌对象
     addOrder(order) {
-        if (this.isMirrorMode) return;
         // 检查点歌信息
         if (!this.checkOrder(order)) {
-            return;
+            return false;
         }
-
-        // 点歌成功，添加点歌信息到点歌列表中
-        this.orderList.push(order);
-
-        // 页面同步添加点歌项
-        this.elem_orderList.style.height = (this.orderList.length * 40) + "px";
-        let tr = document.createElement('tr');
-        tr.innerHTML = `<td>${order.song.sname}</td>
-                <td>${order.song.sartist}</td>
-                <td>${order.uname}</td></td>`;
-        tr.style.top = (40 + (this.elem_orderList.children.length - 1) * 40) + "px"
-        tr.style.animation = "fadeIn 1s forwards";
-            this.elem_orderList.appendChild(tr);
-        this.updateQueueView();
-        this.publishState();
+        this.sendCommand('addOrder', order);
 
         // 同时存储到配置项的历史用户列表、历史点歌列表中，忽略空闲歌单歌曲
         if (order.uid != 0) {
@@ -828,6 +1065,7 @@ class MusicPlayer {
                 sname: order.song.sname,
             });
         }
+        return true;
     }
 
     // 检查点歌信息

@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260810-26";
-import publicMethod from "../utils/common.js?v=20260810-26";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-26";
+import musicPlayer from "./music-player.js?v=20260812-4";
+import publicMethod from "../utils/common.js?v=20260810-41";
+import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
 
 function readArray(key) {
     try {
@@ -35,7 +35,20 @@ class LoginConfiger {
 
         // 添加按钮监听事件
         this.addListener();
-        this.publishSharedState();
+        // 控制页的网易云 Cookie 只存在本地浏览器，启动时主动交给本机同步服务，
+        // 让真正播放的 OBS 页面也能加载歌单和歌曲链接。
+        if (musicPlayer.isMirrorMode) {
+            musicPlayer.pushSharedCredentials();
+            // 控制页不能依赖 OBS 是否在线来结束“检查中”。有本地 Cookie
+            // 就检查本地登录态，没有就明确显示未登录；共享状态随后再覆盖为 OBS 的结果。
+            if (musicServer.getServer('wy').cookie) {
+                this.refreshNeteaseLoginStatus({ silent: true, publish: false });
+            } else {
+                this.setNeteaseLoginStatus({ state: 'logged-out', text: '未登录' }, false);
+            }
+        }
+        // 控制页的 localStorage 可能是旧浏览器/旧房间数据，不能在启动时回写 OBS。
+        if (!musicPlayer.isMirrorMode) this.publishSharedState();
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.login);
         });
@@ -45,10 +58,16 @@ class LoginConfiger {
                 this.loadSongList(command.value);
             }
         });
+        window.addEventListener('bilibili-ordersong-credentials-changed', () => {
+            // 播放端之前因没有登录态加载失败时，收到 Cookie 后自动重试一次。
+            if (!musicPlayer.isMirrorMode && !musicPlayer.audio.src && !musicPlayer.idleSongList.length) {
+                this.loadSongList(this.songListId);
+            }
+        });
         if (window.__lastSharedSettings?.login) {
             this.applySharedState(window.__lastSharedSettings.login);
         }
-        if (!musicPlayer.isMirrorMode || !window.__lastSharedSettings?.login) {
+        if (!musicPlayer.isMirrorMode) {
             this.refreshNeteaseLoginStatus({ silent: true });
         }
 
@@ -130,11 +149,11 @@ class LoginConfiger {
         if (publish) this.publishSharedState();
     }
 
-    async refreshNeteaseLoginStatus({ silent = false } = {}) {
+    async refreshNeteaseLoginStatus({ silent = false, publish = true } = {}) {
         this.setNeteaseLoginStatus({ state: 'checking', text: '检查中...' }, false);
         const server = musicServer.getServer('wy');
         if (!server.cookie) {
-            this.setNeteaseLoginStatus({ state: 'logged-out', text: '未登录' });
+            this.setNeteaseLoginStatus({ state: 'logged-out', text: '未登录' }, publish);
             return false;
         }
 
@@ -145,14 +164,14 @@ class LoginConfiger {
                 state: 'logged-in',
                 text: nickname ? `已登录：${nickname}` : '已登录',
                 nickname
-            });
+            }, publish);
             return true;
         }
 
         this.setNeteaseLoginStatus({
             state: result?.error ? 'error' : 'logged-out',
             text: result?.error ? '检查失败' : '未登录'
-        });
+        }, publish);
         if (!silent && result?.error) publicMethod.pageAlert('网易云登录状态检查失败');
         return false;
     }
@@ -201,6 +220,7 @@ class LoginConfiger {
                 localStorage.setItem("wycookie", typeof data.cookie === 'string' ? data.cookie : JSON.stringify(data.cookie));
                 qrImg.setAttribute("src", "");
                 clearInterval(qrCheck);
+                await musicPlayer.pushSharedCredentials();
                 await this.refreshNeteaseLoginStatus({ silent: true });
                 publicMethod.pageAlert("登录成功!");
             }
@@ -246,32 +266,23 @@ class LoginConfiger {
             return;
         }
 
-        // 预览页没有播放器和网易云登录态，必须请求 OBS 播放页加载。
-        if (musicPlayer.isMirrorMode) {
-            musicPlayer.sendCommand('loadSongList', listId);
-            publicMethod.pageAlert(`已请求 OBS 加载歌单：${listId}`);
+        // 控制页也先读取歌单，然后把完整列表交给后端保存；OBS 不再依赖
+        // 自己的 localStorage 或浏览器 Cookie 才能看到控制页选择的歌单。
+        let songList = await musicServer.getServer().getSongList(listId);
+        this.songListId = listId;
+        this.addSongListHistory(listId);
+        localStorage.setItem("songListId", this.songListId);
+        this.publishSharedState();
+        musicPlayer.sendCommand('loadSongList', {
+            listId,
+            songList: publicMethod.shuffle(Array.isArray(songList) ? songList : [])
+        });
+        if (songList.length) {
+            publicMethod.pageAlert("已将空闲歌单交给后端，OBS 将自动开始播放");
             return true;
         }
-
-        // 获取新的歌单列表
-        let songList = await musicServer.getServer().getSongList(listId);
-        if (!songList.length) {
-            publicMethod.pageAlert("歌单列表获取失败!");
-            return false;
-        }
-
-        // 加载并播放空闲歌单
-        this.songListId = listId;
-        // 洗牌后加载歌单信息
-        musicPlayer.idleSongList = publicMethod.shuffle(songList);
-        musicPlayer.idleIndex = -1;
-        musicPlayer.playNext();
-
-        // 添加到历史记录中
-        this.addSongListHistory(listId);
-        // 保存配置
-        localStorage.setItem("songListId", this.songListId);
-        publicMethod.pageAlert("已获取空闲歌单列表!");
+        publicMethod.pageAlert("歌单暂时获取失败，已通知 OBS 使用共享登录态重试");
+        return false;
     }
 
     // 加载历史歌单列表
