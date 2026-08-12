@@ -207,6 +207,120 @@ h2 { font-size: 16px; }
     gap: 4px;
 }
 
+.lyricsPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 78px;
+    margin-top: 18px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, .1);
+    border-radius: 14px;
+    background: rgba(0, 0, 0, .16);
+    text-align: center;
+}
+
+.lyricsPanel[hidden] { display: none; }
+
+.lyricsLine,
+.lyricsTranslation,
+.lyricsStatus {
+    overflow: hidden;
+    max-width: 100%;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lyricsPrevious,
+.lyricsNext {
+    color: #8f91ac;
+    font-size: 12px;
+}
+
+.lyricsCurrent {
+    color: #fff;
+    font-size: var(--lyrics-font-size, 22px);
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.lyricsTranslation {
+    color: #c6c7d9;
+    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .62));
+    line-height: 1.35;
+}
+
+.lyricsStatus {
+    color: #a9a9c8;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.playbackProgress {
+    --played-ratio: 0;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+}
+
+.progressTime {
+    color: #a9a9c8;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.progressTrack {
+    position: relative;
+    height: 16px;
+    display: flex;
+    align-items: center;
+}
+
+.progressTrack::before,
+.progressBuffered,
+.progressPlayed {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    border-radius: 99px;
+    pointer-events: none;
+}
+
+.progressTrack::before { content: ''; background: rgba(255, 255, 255, .16); }
+.progressBuffered { background: rgba(255, 255, 255, .18); transform: scaleX(0); transform-origin: left center; }
+.progressPlayed { background: linear-gradient(90deg, #887aff, #e27ab2); transform: scaleX(var(--played-ratio, 0)); transform-origin: left center; }
+
+.progressSlider {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 16px;
+    margin: 0;
+    cursor: pointer;
+    opacity: 0;
+}
+
+.progressSlider:disabled { cursor: default; }
+
+.progressSlider:focus-visible { opacity: .45; outline: 1px solid #b8aeff; }
+
+body.overlayLight .lyricsPanel { border-color: rgba(74, 77, 112, .14); background: rgba(125, 129, 175, .08); }
+body.overlayLight .lyricsCurrent { color: #292a42; }
+body.overlayLight .lyricsPrevious,
+body.overlayLight .lyricsNext,
+body.overlayLight .lyricsStatus,
+body.overlayLight .progressTime { color: #777b9a; }
+body.overlayLight .lyricsTranslation { color: #686c88; }
+body.overlayLight .progressTrack::before { background: rgba(64, 68, 103, .16); }
+
+@media (prefers-reduced-motion: reduce) {
+    .progressPlayed { transition: none; }
+}
+
 .nowLabel,
 .requester {
     color: #a9a9c8;

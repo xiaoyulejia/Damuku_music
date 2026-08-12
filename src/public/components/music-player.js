@@ -1,6 +1,7 @@
 import orderConfiger from "./order-configer.js?v=20260810-41";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-8";
+import lyricService from "../services/lyric-service.js?v=20260812-1";
 
 /**
  * 音乐播放器
@@ -71,6 +72,18 @@ class MusicPlayer {
     debug = false;
     audioUnlockRequired = false;
     sharedAudioUnlockRequired = false;
+    remotePlayback = null;
+    remotePlaybackReceivedAt = 0;
+    progressAnimationFrame = 0;
+    progressDragging = false;
+    seekPreviewUntil = 0;
+    lastSeekSubmittedAt = 0;
+    lastSeekSubmittedValue = null;
+    lyricRequestId = 0;
+    lyricAbortController = null;
+    lyricSongKey = '';
+    lyricLines = [];
+    currentLyricIndex = -2;
 
     constructor() {
         this.debug = this.getDebugMode();
@@ -85,6 +98,11 @@ class MusicPlayer {
         this.applyVolume(this.volumePercent);
         this.ready = this.initStateSync();
         this.addListener();
+        window.addEventListener('bilibili-display-settings-changed', () => {
+            document.documentElement.style.setProperty('--lyrics-font-size', `${this.getDisplaySetting('lyricsFontSize', 22)}px`);
+            this.renderLyricsAt(this.getPlaybackPositionMs());
+            this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+        });
         window.addEventListener('bilibili-ordersong-settings-changed', event => {
             if (!this.isMirrorMode) {
                 // 播放端租约确认前，禁止本地旧配置抢先覆盖服务端房间状态。
@@ -110,6 +128,220 @@ class MusicPlayer {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         const value = new URLSearchParams(query).get('debug') || '';
         return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
+    }
+
+    getDisplaySetting(key, fallback) {
+        const value = window.__displaySettings?.[key];
+        return value == null ? fallback : value;
+    }
+
+    songKey(song = this.currentSong) {
+        if (!song?.sid) return '';
+        return `${song.platform || 'wy'}:${song.sid}`;
+    }
+
+    formatPlaybackTime(ms) {
+        const value = Number(ms);
+        if (!Number.isFinite(value)) return '--:--';
+        const totalSeconds = Math.max(0, Math.floor(value / 1000));
+        const seconds = totalSeconds % 60;
+        const minutes = Math.floor(totalSeconds / 60);
+        if (minutes < 60) return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        const hours = Math.floor(minutes / 60);
+        return `${hours}:${String(minutes % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    getPlaybackPositionMs() {
+        if (!this.isMirrorMode) return Math.max(0, Math.round((Number(this.audio.currentTime) || 0) * 1000));
+        const playback = this.remotePlayback;
+        if (!playback || playback.songKey !== this.songKey()) return 0;
+        let positionMs = Math.max(0, Number(playback.positionMs) || 0);
+        const sampledAt = Number(playback.sampledAt);
+        const receivedAt = this.remotePlaybackReceivedAt || Date.now();
+        const anchor = Number.isFinite(sampledAt) && Math.abs(Date.now() - sampledAt) <= 30_000
+            ? sampledAt
+            : receivedAt;
+        if (!playback.paused && !playback.seeking && Number(playback.readyState) >= 3) {
+            positionMs += Math.max(0, Date.now() - anchor);
+        }
+        const durationMs = Number(playback.durationMs) || 0;
+        return durationMs > 0 ? Math.min(positionMs, durationMs) : positionMs;
+    }
+
+    getPlaybackDurationMs() {
+        if (!this.isMirrorMode) {
+            const duration = Number(this.audio.duration);
+            return Number.isFinite(duration) && duration > 0
+                ? Math.round(duration * 1000)
+                : Math.max(0, Math.round((Number(this.currentSong?.duration) || 0) * 1000));
+        }
+        return Math.max(0, Number(this.remotePlayback?.durationMs) || 0);
+    }
+
+    renderPlaybackProgress(positionMs, durationMs, { interactive = true } = {}) {
+        const root = document.getElementById('playbackProgress');
+        if (!root) return;
+        const duration = Number.isFinite(Number(durationMs)) ? Math.max(0, Number(durationMs)) : 0;
+        let position = Number.isFinite(Number(positionMs)) ? Math.max(0, Number(positionMs)) : 0;
+        if (duration > 0) position = Math.min(position, duration);
+        const current = document.getElementById('currentTimeText');
+        const total = document.getElementById('durationText');
+        const slider = document.getElementById('progressSlider');
+        const buffered = document.getElementById('progressBuffered');
+        if (current) current.textContent = this.formatPlaybackTime(position);
+        if (total) total.textContent = duration > 0 ? this.formatPlaybackTime(duration) : '--:--';
+        root.style.setProperty('--played-ratio', String(duration > 0 ? Math.min(1, position / duration) : 0));
+        if (slider && !this.progressDragging && Date.now() >= this.seekPreviewUntil) {
+            slider.max = String(duration);
+            slider.value = String(Math.min(position, duration || position));
+        }
+        if (slider) {
+            slider.disabled = !this.currentSong || duration <= 0 || !interactive ||
+                !Boolean(this.getDisplaySetting('progressSeekEnabled', true));
+        }
+        if (buffered) {
+            let bufferedRatio = 0;
+            if (!this.isMirrorMode && duration > 0 && this.audio.buffered?.length) {
+                try { bufferedRatio = Math.min(1, this.audio.buffered.end(this.audio.buffered.length - 1) * 1000 / duration); } catch (_) { /* media changed */ }
+            }
+            buffered.style.transform = `scaleX(${bufferedRatio})`;
+        }
+    }
+
+    startProgressAnimation() {
+        if (this.progressAnimationFrame) return;
+        const frame = () => {
+            this.progressAnimationFrame = requestAnimationFrame(frame);
+            const position = this.getPlaybackPositionMs();
+            this.renderPlaybackProgress(position, this.getPlaybackDurationMs(), { interactive: true });
+            this.renderLyricsAt(position);
+            if (this.isMirrorMode ? this.remotePlayback?.paused || this.remotePlayback?.seeking : this.audio.paused) {
+                this.stopProgressAnimation();
+            }
+        };
+        this.progressAnimationFrame = requestAnimationFrame(frame);
+    }
+
+    stopProgressAnimation() {
+        if (this.progressAnimationFrame) cancelAnimationFrame(this.progressAnimationFrame);
+        this.progressAnimationFrame = 0;
+    }
+
+    async commitSeek(positionMs) {
+        const duration = this.getPlaybackDurationMs();
+        const target = Math.max(0, Math.min(duration > 0 ? duration : Number(positionMs) || 0, Number(positionMs) || 0));
+        if (this.lastSeekSubmittedValue === target && Date.now() - this.lastSeekSubmittedAt < 250) return null;
+        this.lastSeekSubmittedValue = target;
+        this.lastSeekSubmittedAt = Date.now();
+        this.progressDragging = false;
+        this.seekPreviewUntil = Date.now() + 2000;
+        this.renderPlaybackProgress(target, duration, { interactive: true });
+        this.renderLyricsAt(target);
+        if (this.isMirrorMode) {
+            const result = await this.sendCommand('seek', {
+                positionMs: Math.round(target),
+                expectedSongKey: this.songKey()
+            });
+            if (!result?.ok && result?.result?.reason) publicMethod.pageAlert('跳转失败：' + result.result.reason);
+            return result;
+        }
+        return this.executeSeek({ positionMs: target, expectedSongKey: this.songKey() });
+    }
+
+    executeSeek(value = {}) {
+        if (this.isMirrorMode || !this.currentSong || value.expectedSongKey !== this.songKey()) return false;
+        const duration = Number(this.audio.duration);
+        if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(Number(value.positionMs))) return false;
+        const target = Math.max(0, Math.min(duration, Number(value.positionMs) / 1000));
+        try {
+            this.audio.currentTime = target;
+            this.renderPlaybackProgress(target * 1000, duration * 1000, { interactive: true });
+            this.renderLyricsAt(target * 1000);
+            this.publishState();
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    setLyricsState(status, payload = {}) {
+        const panel = document.getElementById('lyricsPanel');
+        const statusElement = document.getElementById('lyricsStatus');
+        if (!panel) return;
+        const enabled = Boolean(this.getDisplaySetting('lyricsEnabled', true));
+        panel.hidden = !enabled || !this.currentSong || status === 'hidden';
+        panel.dataset.state = status;
+        const labels = {
+            loading: '正在获取歌词',
+            instrumental: '纯音乐，请欣赏',
+            unsupported: '暂不支持该平台歌词',
+            empty: '暂无歌词',
+            error: '歌词获取失败'
+        };
+        if (statusElement) {
+            statusElement.textContent = payload.message || labels[status] || '';
+            statusElement.hidden = !labels[status] && !payload.message;
+        }
+    }
+
+    resetLyrics({ loading = false } = {}) {
+        this.lyricLines = [];
+        this.currentLyricIndex = -2;
+        this.lyricSongKey = loading ? this.songKey() : '';
+        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(id => {
+            const element = document.getElementById(id);
+            if (element) element.textContent = '';
+        });
+        const translation = document.getElementById('lyricsTranslation');
+        if (translation) translation.hidden = true;
+        this.setLyricsState(loading ? 'loading' : 'hidden');
+    }
+
+    async loadLyricsForSong(song) {
+        const requestId = ++this.lyricRequestId;
+        this.lyricAbortController?.abort();
+        this.lyricAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+        const key = this.songKey(song);
+        this.lyricSongKey = key;
+        this.resetLyrics({ loading: true });
+        if (!song) {
+            this.resetLyrics();
+            return;
+        }
+        try {
+            const result = await lyricService.load(song, { signal: this.lyricAbortController?.signal });
+            if (requestId !== this.lyricRequestId || this.songKey() !== key) return;
+            this.lyricLines = Array.isArray(result.lines) ? result.lines : [];
+            this.currentLyricIndex = -2;
+            this.setLyricsState(result.status || (result.noLyrics ? 'empty' : 'ready'));
+            this.renderLyricsAt(this.getPlaybackPositionMs());
+        } catch (error) {
+            if (requestId !== this.lyricRequestId || error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return;
+            this.setLyricsState('error');
+        }
+    }
+
+    renderLyricsAt(positionMs) {
+        if (!this.currentSong || this.lyricSongKey !== this.songKey() || !this.lyricLines.length) return;
+        const effectiveTime = Number(positionMs || 0) + Number(this.getDisplaySetting('lyricsOffsetMs', 0) || 0);
+        const index = lyricService.findLineIndex(this.lyricLines, effectiveTime);
+        if (index === this.currentLyricIndex && !this.progressDragging) return;
+        this.currentLyricIndex = index;
+        const previous = this.lyricLines[index - 1];
+        const current = this.lyricLines[index];
+        const next = this.lyricLines[index + 1];
+        const setText = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) element.textContent = value || '';
+        };
+        setText('lyricsPrevious', previous?.text);
+        setText('lyricsCurrent', current?.text);
+        setText('lyricsNext', next?.text);
+        const translation = document.getElementById('lyricsTranslation');
+        if (translation) {
+            translation.textContent = current?.translation || '';
+            translation.hidden = !Boolean(this.getDisplaySetting('lyricsTranslation', true)) || !current?.translation;
+        }
     }
 
     debugLog(label, value) {
@@ -421,6 +653,7 @@ class MusicPlayer {
         }
         if (message.command === 'pause') this.audio.pause();
         if (message.command === 'volume') this.applyVolume(canonicalState?.volume ?? message.value);
+        if (message.command === 'seek') this.executeSeek(message.value);
         if (message.command === 'unlockAudio') this.unlockPlayback();
         if (message.command === 'settings' && message.value) {
             window.__lastSharedSettings = message.value;
@@ -434,6 +667,10 @@ class MusicPlayer {
         if (this.isMirrorMode) return;
         const song = state?.currentSong || this.currentSong;
         if (!song) {
+            this.stopProgressAnimation();
+            this.remotePlayback = null;
+            this.resetLyrics();
+            this.renderPlaybackProgress(0, 0, { interactive: false });
             this.audio.pause();
             this.audio.removeAttribute('src');
             this.loadedAudioSongId = '';
@@ -443,7 +680,7 @@ class MusicPlayer {
             this.updatePlayerState(state?.status || '等待点歌');
             return;
         }
-        const sameSong = this.loadedAudioSongId === String(song.sid) && Boolean(this.audio.src);
+        const sameSong = this.loadedAudioSongId === this.songKey(song) && Boolean(this.audio.src);
         if (!sameSong) {
             await this.play(song, state?.currentRequester || '');
             return;
@@ -480,6 +717,17 @@ class MusicPlayer {
             idleIndex: this.idleIndex,
             idleSongCount: this.idleSongList.length,
             audioUnlockRequired: this.audioUnlockRequired,
+            playback: {
+                songKey: this.songKey(),
+                positionMs: Math.max(0, Math.round((Number(this.audio.currentTime) || 0) * 1000)),
+                durationMs: Number.isFinite(this.audio.duration)
+                    ? Math.max(0, Math.round(this.audio.duration * 1000))
+                    : Math.max(0, Math.round((Number(this.currentSong?.duration) || 0) * 1000)),
+                paused: this.audio.paused,
+                seeking: this.audio.seeking,
+                readyState: this.audio.readyState,
+                sampledAt: Date.now()
+            },
             queueRevision: this.lastQueueRevision,
             settings: {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
@@ -636,6 +884,19 @@ class MusicPlayer {
             : [];
         this.currentSong = state.currentSong || this.orderList[0]?.song || null;
         this.currentRequester = state.currentRequester || this.orderList[0]?.uname || '';
+        const previousSongKey = this.remotePlayback?.songKey || this.lyricSongKey;
+        this.remotePlayback = state.playback && typeof state.playback === 'object' ? state.playback : null;
+        this.remotePlaybackReceivedAt = Date.now();
+        if (this.remotePlayback?.songKey === this.songKey() &&
+            this.lastSeekSubmittedValue != null && Date.now() - this.lastSeekSubmittedAt > 250) {
+            this.lastSeekSubmittedValue = null;
+        }
+        if (previousSongKey !== this.songKey()) {
+            this.seekPreviewUntil = 0;
+            this.progressDragging = false;
+            this.renderPlaybackProgress(0, 0, { interactive: false });
+            this.loadLyricsForSong(this.currentSong);
+        }
         if (typeof state.songListId === 'string' && state.songListId) {
             window.__sharedSongListId = state.songListId;
         }
@@ -666,6 +927,10 @@ class MusicPlayer {
         this.renderQueue();
         this.updateNowPlaying(this.currentSong, this.currentRequester);
         this.updatePlayerState(state.status || '等待 OBS 播放');
+        this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+        this.renderLyricsAt(this.getPlaybackPositionMs());
+        if (this.isMirrorMode && this.remotePlayback && !this.remotePlayback.paused && !this.remotePlayback.seeking) this.startProgressAnimation();
+        else if (this.isMirrorMode) this.stopProgressAnimation();
         window.dispatchEvent(new CustomEvent('damuku-room-state', { detail: state }));
     }
 
@@ -729,12 +994,9 @@ class MusicPlayer {
     addListener() {
         // 1. 开始播放事件
         this.audio.addEventListener("play", () => {
-            let dot = document.getElementsByClassName('dot')[0];
-            // 设置闪烁动画
-            if (!dot.classList.contains("dot_blink")) {
-                dot.classList.add("dot_blink");
-            }
+            this.startProgressAnimation();
             this.updatePlayerState("播放中");
+            this.publishState();
             this.debugLog('音频 play 事件', {
                 paused: this.audio.paused,
                 muted: this.audio.muted,
@@ -745,12 +1007,11 @@ class MusicPlayer {
         });
         // 2. 暂停播放事件
         this.audio.addEventListener("pause", () => {
-            let dot = document.getElementsByClassName('dot')[0];
-            // 设置闪烁动画
-            if (dot.classList.contains("dot_blink")) {
-                dot.classList.remove("dot_blink");
-            }
+            this.stopProgressAnimation();
+            this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+            this.renderLyricsAt(this.getPlaybackPositionMs());
             this.updatePlayerState("已暂停");
+            this.publishState();
             this.debugLog('音频 pause 事件', {
                 currentTime: this.audio.currentTime,
                 readyState: this.audio.readyState
@@ -759,10 +1020,11 @@ class MusicPlayer {
         this.audio.addEventListener("loadstart", () => this.debugLog('音频开始加载', {
             src: this.describeAudioUrl(this.audio.currentSrc || this.audio.src)
         }));
-        this.audio.addEventListener("loadedmetadata", () => this.debugLog('音频元数据已加载', {
-            duration: this.audio.duration,
-            readyState: this.audio.readyState
-        }));
+        this.audio.addEventListener("loadedmetadata", () => {
+            this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+            this.publishState();
+            this.debugLog('音频元数据已加载', { duration: this.audio.duration, readyState: this.audio.readyState });
+        });
         this.audio.addEventListener("canplay", () => this.debugLog('音频可以播放', {
             readyState: this.audio.readyState,
             networkState: this.audio.networkState
@@ -772,15 +1034,15 @@ class MusicPlayer {
             readyState: this.audio.readyState
         }));
         this.audio.addEventListener("stalled", () => this.debugLog('音频网络加载停滞'));
+        this.audio.addEventListener("seeked", () => {
+            this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+            this.renderLyricsAt(this.getPlaybackPositionMs());
+            this.publishState();
+        });
         // 3. 播放时间更新事件
         this.audio.addEventListener("timeupdate", () => {
-            let progress = document.getElementsByClassName('progress_bar')[0];
-            // 页面进度条实时修改
-            const duration = Number(this.audio.duration);
-            const progressWidth = progress?.parentElement?.clientWidth || 280;
-            progress.style.width = duration > 0
-                ? ((this.audio.currentTime / duration) * progressWidth) + "px"
-                : "0px";
+            this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+            this.renderLyricsAt(this.getPlaybackPositionMs());
             // 超过歌曲限长则自动播放下一首
             if (orderConfiger.overLimitSkip > 0 &&
                 this.audio.currentTime > orderConfiger.overLimitSkip &&
@@ -791,6 +1053,10 @@ class MusicPlayer {
         });
         // 4. 播放结束事件
         this.audio.addEventListener("ended", () => {
+            this.stopProgressAnimation();
+            this.renderPlaybackProgress(0, 0, { interactive: false });
+            this.resetLyrics();
+            this.publishState();
             // 播放下一首歌曲
             this.playNext();
         });
@@ -805,6 +1071,9 @@ class MusicPlayer {
                 readyState: this.audio.readyState
             });
             this.updatePlayerState("播放错误");
+            this.stopProgressAnimation();
+            this.resetLyrics();
+            this.renderPlaybackProgress(0, 0, { interactive: false });
             publicMethod.pageAlert("播放错误，即将播放下一首...");
             clearTimeout(this.errorNextTimer);
             this.errorNextTimer = setTimeout(() => {
@@ -820,6 +1089,15 @@ class MusicPlayer {
         clearTimeout(this.errorNextTimer);
         this.errorNextTimer = null;
         this.overLimitTriggered = false;
+
+        this.stopProgressAnimation();
+        this.lyricAbortController?.abort();
+        this.resetLyrics({ loading: true });
+        this.audio.pause();
+        this.audio.removeAttribute('src');
+        this.audio.load();
+        this.loadedAudioSongId = '';
+        this.renderPlaybackProgress(0, 0, { interactive: false });
 
         this.currentSong = song;
         this.currentRequester = requester;
@@ -853,6 +1131,8 @@ class MusicPlayer {
 
         if (!songurl) {
             if (requestId !== this.playbackRequestId) return;
+            this.resetLyrics();
+            this.renderPlaybackProgress(0, 0, { interactive: false });
             publicMethod.pageAlert("获取歌曲链接失败，即将播放下一首...");
             this.autoSkipCount += 1;
             const autoSkipLimit = Math.max(1, this.orderList.length + this.idleSongList.length);
@@ -887,7 +1167,9 @@ class MusicPlayer {
 
         this.audio.src = songurl;
         this.autoSkipCount = 0;
-        this.loadedAudioSongId = String(song.sid);
+        this.loadedAudioSongId = this.songKey(song);
+        this.loadLyricsForSong(song);
+        this.renderPlaybackProgress(0, Math.max(0, Number(song.duration || 0) * 1000));
         this.debugLog('已设置 audio.src', {
             src: this.describeAudioUrl(songurl),
             muted: this.audio.muted,

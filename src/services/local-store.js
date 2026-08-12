@@ -22,6 +22,11 @@ const DEFAULT_SETTINGS = {
         liveShowQueueHeader: true,
         liveShowRequester: true,
         liveShowAlerts: false,
+        lyricsEnabled: true,
+        lyricsTranslation: true,
+        lyricsOffsetMs: 0,
+        lyricsFontSize: 22,
+        progressSeekEnabled: true,
         customOverlayCss: ''
     },
     login: null,
@@ -62,6 +67,11 @@ function mergeSettings(input = {}) {
     for (const key of ['liveShowPlayer', 'liveShowControls', 'liveShowQueueHeader', 'liveShowRequester', 'liveShowAlerts']) {
         result.display[key] = Boolean(display[key] ?? result.display[key]);
     }
+    for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled']) {
+        result.display[key] = Boolean(display[key] ?? result.display[key]);
+    }
+    result.display.lyricsOffsetMs = numeric(display.lyricsOffsetMs, 0, -5000, 5000);
+    result.display.lyricsFontSize = numeric(display.lyricsFontSize, 22, 12, 64);
     result.display.customOverlayCss = typeof display.customOverlayCss === 'string' ? display.customOverlayCss.slice(0, 20000) : '';
     result.login = input.login && typeof input.login === 'object'
         ? {

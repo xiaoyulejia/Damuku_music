@@ -1,4 +1,4 @@
-import musicPlayer from './components/music-player.js?v=20260812-4';
+import musicPlayer from './components/music-player.js?v=20260812-6';
 import './components/queue-manager.js?v=20260812-1';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
@@ -62,6 +62,11 @@ async function initializeMainPage() {
             liveShowQueueHeader: readFlag('liveShowQueueHeader', true),
             liveShowRequester: readFlag('liveShowRequester', true),
             liveShowAlerts: readFlag('liveShowAlerts', false),
+            lyricsEnabled: readFlag('lyricsEnabled', true),
+            lyricsTranslation: readFlag('lyricsTranslation', true),
+            lyricsOffsetMs: Number(localStorage.getItem('lyricsOffsetMs') || 0),
+            lyricsFontSize: Number(localStorage.getItem('lyricsFontSize') || 22),
+            progressSeekEnabled: readFlag('progressSeekEnabled', true),
             customOverlayCss: localStorage.getItem('customOverlayCss') || ''
         },
         login: {
@@ -82,6 +87,7 @@ async function initializeMainPage() {
         if (data.login) loginConfiger.applySharedState(data.login);
         if (data.volume != null) musicPlayer.applyVolume(data.volume);
         applyAppearance();
+        window.dispatchEvent(new CustomEvent('bilibili-display-settings-changed'));
     };
 
     const fetchAuthoritativeSettings = async ({ migrate = false } = {}) => {
@@ -171,6 +177,7 @@ async function initializeMainPage() {
         const liveShowAlerts = Boolean(value('liveShowAlerts', false));
         document.documentElement.style.setProperty('--overlay-opacity', String(opacity / 100));
         document.documentElement.style.setProperty('--overlay-blur', `${blur}px`);
+        document.documentElement.style.setProperty('--lyrics-font-size', `${Math.max(12, Math.min(64, Number(value('lyricsFontSize', 22))))}px`);
         document.body.classList.toggle('liveMode', liveMode);
         document.body.classList.toggle('liveShowPlayer', liveMode && liveShowPlayer);
         document.body.classList.toggle('liveShowControls', liveMode && liveShowControls);
@@ -196,6 +203,14 @@ async function initializeMainPage() {
         Object.entries(liveInputs).forEach(([key, input]) => {
             if (input) input.checked = Boolean(value(key, key === 'liveShowQueueHeader' || key === 'liveShowRequester'));
         });
+        for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled']) {
+            const input = document.getElementById(key);
+            if (input) input.checked = Boolean(value(key, true));
+        }
+        for (const key of ['lyricsOffsetMs', 'lyricsFontSize']) {
+            const input = document.getElementById(key);
+            if (input) input.value = String(value(key, key === 'lyricsFontSize' ? 22 : 0));
+        }
         if (opacityValue) opacityValue.textContent = `${opacity}%`;
         if (blurValue) blurValue.textContent = `${blur}px`;
         applyCustomCss();
@@ -209,6 +224,11 @@ async function initializeMainPage() {
         liveShowQueueHeader: Boolean(document.getElementById('liveShowQueueHeader')?.checked),
         liveShowRequester: Boolean(document.getElementById('liveShowRequester')?.checked),
         liveShowAlerts: Boolean(document.getElementById('liveShowAlerts')?.checked),
+        lyricsEnabled: Boolean(document.getElementById('lyricsEnabled')?.checked),
+        lyricsTranslation: Boolean(document.getElementById('lyricsTranslation')?.checked),
+        lyricsOffsetMs: Number(document.getElementById('lyricsOffsetMs')?.value || 0),
+        lyricsFontSize: Number(document.getElementById('lyricsFontSize')?.value || 22),
+        progressSeekEnabled: Boolean(document.getElementById('progressSeekEnabled')?.checked),
         customOverlayCss: document.getElementById('customOverlayCss')?.value || ''
     });
     const publishDisplaySettings = () => {
@@ -234,6 +254,13 @@ async function initializeMainPage() {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
             publishDisplaySettings();
+        };
+    });
+    ['lyricsEnabled', 'lyricsTranslation', 'lyricsOffsetMs', 'lyricsFontSize', 'progressSeekEnabled'].forEach(key => {
+        const input = document.getElementById(key);
+        if (input) input.onchange = () => {
+            publishDisplaySettings();
+            window.dispatchEvent(new CustomEvent('bilibili-display-settings-changed'));
         };
     });
     if (customCssEditor) customCssEditor.value = '';
@@ -317,6 +344,22 @@ async function initializeMainPage() {
         volumeSlider.value = String(musicPlayer.volumePercent);
         if (volumeValue) volumeValue.textContent = `${musicPlayer.volumePercent}%`;
         volumeSlider.oninput = () => musicPlayer.setVolume(volumeSlider.value);
+    }
+    const progressSlider = document.getElementById('progressSlider');
+    if (progressSlider) {
+        progressSlider.onpointerdown = () => { musicPlayer.progressDragging = true; };
+        progressSlider.oninput = () => {
+            musicPlayer.progressDragging = true;
+            musicPlayer.renderPlaybackProgress(Number(progressSlider.value), musicPlayer.getPlaybackDurationMs());
+            musicPlayer.renderLyricsAt(Number(progressSlider.value));
+        };
+        progressSlider.onchange = () => musicPlayer.commitSeek(Number(progressSlider.value));
+        progressSlider.onpointerup = () => {
+            if (musicPlayer.progressDragging) musicPlayer.commitSeek(Number(progressSlider.value));
+        };
+        progressSlider.onkeydown = event => {
+            if (event.key === 'Enter' || event.key === ' ') musicPlayer.commitSeek(Number(progressSlider.value));
+        };
     }
     document.getElementById('settingsBtn').onclick = () => {
         const settingsUrl = new URL('./settings.html', window.location.href);

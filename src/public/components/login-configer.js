@@ -1,6 +1,6 @@
 import musicPlayer from "./music-player.js?v=20260812-4";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-8";
 
 /**
  * 登录配置

@@ -12,9 +12,9 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260812-5"></script>
+    <script type="module" src="./main.js?v=20260812-6"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260810-6">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-1">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
@@ -57,8 +57,21 @@
                     <span id="nowRequester" class="requester"></span>
                 </div>
             </div>
-            <div class="progress">
-                <div class="progress_bar"><i class="dot"></i></div>
+            <section id="lyricsPanel" class="lyricsPanel" aria-live="off" hidden>
+                <div id="lyricsPrevious" class="lyricsLine lyricsPrevious"></div>
+                <div id="lyricsCurrent" class="lyricsLine lyricsCurrent"></div>
+                <div id="lyricsTranslation" class="lyricsTranslation" hidden></div>
+                <div id="lyricsNext" class="lyricsLine lyricsNext"></div>
+                <div id="lyricsStatus" class="lyricsStatus" hidden></div>
+            </section>
+            <div id="playbackProgress" class="playbackProgress">
+                <span id="currentTimeText" class="progressTime">00:00</span>
+                <div class="progressTrack">
+                    <div id="progressBuffered" class="progressBuffered"></div>
+                    <div id="progressPlayed" class="progressPlayed"></div>
+                    <input id="progressSlider" class="progressSlider" type="range" min="0" max="0" step="1000" value="0" disabled aria-label="歌曲播放进度">
+                </div>
+                <span id="durationText" class="progressTime">--:--</span>
             </div>
             <div class="playerActions">
                 <button id="unlockAudioBtn" class="primaryAction">启用声音</button>
@@ -264,6 +277,28 @@
                                 <td><output id="overlayBlurValue"></output></td>
                             </tr>
                             <tr>
+                                <td>显示歌词</td>
+                                <td colspan="2"><label class="setting_check"><input id="lyricsEnabled" type="checkbox">显示歌词</label></td>
+                            </tr>
+                            <tr>
+                                <td>歌词翻译</td>
+                                <td colspan="2"><label class="setting_check"><input id="lyricsTranslation" type="checkbox">显示翻译</label></td>
+                            </tr>
+                            <tr>
+                                <td>歌词偏移</td>
+                                <td><input id="lyricsOffsetMs" type="number" min="-5000" max="5000" step="50"></td>
+                                <td>毫秒</td>
+                            </tr>
+                            <tr>
+                                <td>歌词字号</td>
+                                <td><input id="lyricsFontSize" type="number" min="12" max="64" step="1"></td>
+                                <td>像素</td>
+                            </tr>
+                            <tr>
+                                <td>允许拖动进度</td>
+                                <td colspan="2"><label class="setting_check"><input id="progressSeekEnabled" type="checkbox">允许控制页跳转</label></td>
+                            </tr>
+                            <tr>
                                 <td colspan="3" class="customCssCell">
                                     <label for="customOverlayCss">自定义 CSS</label>
                                     <textarea id="customOverlayCss" rows="8" spellcheck="false"
@@ -330,7 +365,7 @@
                     <div class="setting_about_page">
                         <p><strong>Damuku_music</strong></p>
                         <p>为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐</p>
-                        <p>版本：DEV 0.0.8</p>
+                        <p>版本：DEV 0.1.0</p>
                         <hr>
                         <p>开源地址：<a href="https://github.com/xiaoyulejia/Damuku_music" target="_blank">GitHub</a></p>
                         <p>作者主页：<a href="https://github.com/xiaoyulejia" target="_blank">xiaoan.website</a></p>

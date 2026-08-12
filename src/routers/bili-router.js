@@ -105,6 +105,15 @@ function defaultRoomState() {
         status: '等待播放',
         volume: 50,
         audioUnlockRequired: false,
+        playback: {
+            songKey: '',
+            positionMs: 0,
+            durationMs: 0,
+            paused: true,
+            seeking: false,
+            readyState: 0,
+            sampledAt: 0
+        },
         songListId: '',
         idleSongList: [],
         idleIndex: -1,
@@ -135,6 +144,33 @@ function normalizeSong(song) {
         sname: String(song.sname || song.name || '').slice(0, 300),
         sartist: String(song.sartist || song.artist || '').slice(0, 300),
         duration: Number(song.duration) || 0
+    };
+}
+
+function songKey(song) {
+    if (!song?.sid) return '';
+    return `${song.platform || 'wy'}:${song.sid}`;
+}
+
+function finiteClamp(value, min, max, fallback = min) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, number));
+}
+
+function normalizePlayback(playback, currentSong) {
+    const expectedKey = songKey(currentSong);
+    const durationMs = finiteClamp(playback?.durationMs, 0, 24 * 60 * 60 * 1000);
+    const positionMs = finiteClamp(playback?.positionMs, 0, durationMs || 24 * 60 * 60 * 1000);
+    const sameSong = playback?.songKey === expectedKey && Boolean(expectedKey);
+    return {
+        songKey: sameSong ? expectedKey : '',
+        positionMs: sameSong ? positionMs : 0,
+        durationMs: sameSong ? durationMs : 0,
+        paused: Boolean(playback?.paused),
+        seeking: Boolean(playback?.seeking),
+        readyState: finiteClamp(playback?.readyState, 0, 4),
+        sampledAt: finiteClamp(playback?.sampledAt, 0, Date.now() + 60_000)
     };
 }
 
@@ -171,6 +207,7 @@ function normalizeRoomState(input = {}) {
         ...input,
         queue,
         currentSong,
+        playback: normalizePlayback(input.playback, currentSong),
         currentRequester: String(input.currentRequester || queue[0]?.uname || ''),
         status: String(input.status || (currentSong ? '等待播放' : '等待点歌')),
         volume: Math.max(0, Math.min(100, input.volume == null ? defaults.volume : Number(input.volume) || 0)),
@@ -501,6 +538,32 @@ function applyRoomCommand(roomId, command) {
         case 'volume':
             state.volume = Math.max(0, Math.min(100, Number(value) || 0));
             break;
+        case 'seek': {
+            if (!state.currentSong) {
+                result = { accepted: false, command: command.command, reason: 'no-current-song', httpStatus: 409 };
+                break;
+            }
+            const expectedSongKey = String(value?.expectedSongKey || '');
+            if (expectedSongKey !== songKey(state.currentSong)) {
+                result = { accepted: false, command: command.command, reason: 'song-changed', httpStatus: 409 };
+                break;
+            }
+            const rawPosition = Number(value?.positionMs);
+            if (!Number.isFinite(rawPosition) || rawPosition < 0) {
+                result = { accepted: false, command: command.command, reason: 'position-invalid', httpStatus: 400 };
+                break;
+            }
+            const durationMs = Number(state.playback?.durationMs) || Number(state.currentSong.duration || 0) * 1000;
+            const positionMs = Math.max(0, Math.min(durationMs > 0 ? durationMs : rawPosition, rawPosition));
+            state.playback = {
+                ...state.playback,
+                songKey: expectedSongKey,
+                positionMs,
+                seeking: true
+            };
+            result = { accepted: true, command: command.command, positionMs, expectedSongKey };
+            break;
+        }
         case 'settings':
             state.settings = {
                 order: mergeSettings({ order: { ...state.settings.order, ...(value?.order || {}) } }).order,
@@ -741,6 +804,7 @@ router.post('/live/sync-state', (req, res) => {
         status: state.status || canonical.status,
         volume: state.volume == null ? canonical.volume : state.volume,
         audioUnlockRequired: Boolean(state.audioUnlockRequired),
+        playback: state.playback || canonical.playback,
         settings: {
             order: state.settings?.order || canonical.settings.order || null,
             login: state.settings?.login || canonical.settings.login || null
@@ -764,7 +828,7 @@ router.post('/live/sync-command', (req, res) => {
     }
     const allowedCommands = new Set([
         'loadSongList', 'addOrder', 'next', 'play', 'volume', 'settings',
-        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue'
+        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue', 'seek'
     ]);
     if (!allowedCommands.has(String(command.command || ''))) {
         return res.status(400).json({ code: -1, message: '不支持的控制指令' });
@@ -777,6 +841,14 @@ router.post('/live/sync-command', (req, res) => {
         if (!value || typeof value !== 'object' || Array.isArray(value) ||
             Object.keys(value).some(key => !allowedFields.includes(key))) {
             return res.status(400).json({ code: -1, message: '队列控制参数无效' });
+        }
+    }
+    if (command.command === 'seek') {
+        const value = command.value;
+        const allowedFields = ['positionMs', 'expectedSongKey'];
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            Object.keys(value).some(key => !allowedFields.includes(key))) {
+            return res.status(400).json({ code: -1, message: 'seek参数无效' });
         }
     }
     const filePath = commandLogPath(roomId);
@@ -811,7 +883,10 @@ router.post('/live/sync-command', (req, res) => {
                             ? nextCommand.value.pendingOrderIds.slice(0, MAX_QUEUE_REORDER_ITEMS)
                             : undefined
                     }
-                    : undefined,
+                    : nextCommand.command === 'seek' ? {
+                        positionMs: nextCommand.value?.positionMs,
+                        expectedSongKey: nextCommand.value?.expectedSongKey || ''
+                    } : undefined,
         createdAt: nextCommand.createdAt,
         stateRevision: canonicalState.stateRevision,
         result: applied.result
