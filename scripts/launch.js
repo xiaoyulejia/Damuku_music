@@ -1,16 +1,14 @@
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
+const { loadRuntimeConfig } = require('../src/config');
 
 const rootDir = path.resolve(__dirname, '..');
-const port = Number(process.env.DAMUKU_PORT || 8000);
-const webapiConfigPath = path.join(rootDir, 'config', 'webapi.js');
-const webapiConfig = require('fs').existsSync(webapiConfigPath)
-    ? require(webapiConfigPath)
-    : require(path.join(rootDir, 'config', 'default', 'webapi.js'));
-const basePath = webapiConfig.BASE_PATH || '/order';
+const runtime = loadRuntimeConfig(rootDir);
+const port = runtime.port;
+const basePath = runtime.basePath || '';
 const launcherPath = `${basePath.replace(/\/$/, '')}/launcher.html`;
-const launcherUrl = `http://localhost:${port}${launcherPath}`;
+const launcherUrl = `http://localhost:${port}${launcherPath}?server_version=${encodeURIComponent(runtime.buildId)}`;
 let appProcess = null;
 
 function probe() {

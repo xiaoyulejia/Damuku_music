@@ -1,7 +1,9 @@
+import publicMethod from "../../utils/common.js?v=20260812-5";
+
 class WyMusicServer {
 
     // 服务器地址
-    baseUrl = window.API_CONFIG.BASE_PATH + window.API_CONFIG.netease_api;
+    baseUrl = publicMethod.resolveApiBase(window.API_CONFIG?.netease_api);
 
     cookie = (() => {
         const value = localStorage.getItem("wycookie");

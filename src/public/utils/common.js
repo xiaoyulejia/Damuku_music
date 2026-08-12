@@ -1,6 +1,29 @@
 /* 公用函数 */
 export default class PublicMethod {
 
+    // 统一解析集成挂载路径和外部 API 地址。
+    static resolveApiBase(apiAddress, basePath = window.API_CONFIG?.BASE_PATH || '') {
+        const address = String(apiAddress || '').trim();
+        if (!address) return String(basePath || '').replace(/\/$/, '');
+        if (/^(https?:|wss?:|\/\/)/i.test(address)) {
+            try {
+                return new URL(address, window.location.href).toString().replace(/\/$/, '');
+            } catch (_) {
+                return address.replace(/\/$/, '');
+            }
+        }
+        const joined = [basePath, address].map(value => String(value || '').replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/');
+        return `/${joined}`.replace(/\/+/g, '/');
+    }
+
+    static resolveWebSocketBase(apiAddress, basePath = window.API_CONFIG?.BASE_PATH || '') {
+        const resolved = PublicMethod.resolveApiBase(apiAddress, basePath);
+        if (/^wss?:/i.test(resolved)) return resolved;
+        if (/^https?:/i.test(resolved)) return resolved.replace(/^http/i, 'ws');
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${protocol}//${window.location.host}${resolved}`;
+    }
+
     // 加载配置项
     static readConfig(obj) {
         // 根据字段名读取配置项

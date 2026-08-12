@@ -2,6 +2,8 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { loadRuntimeConfig } = require('./src/config');
+const { LocalStore } = require('./src/services/local-store');
 
 const app = express();
 const { attachLiveProxy } = require('./src/services/bili-live-ws');
@@ -11,30 +13,39 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 console.log("===============正在启动服务器...=============");
+const runtime = loadRuntimeConfig(__dirname);
+process.env.DAMUKU_BUILD_ID = runtime.buildId;
+const localStore = new LocalStore(__dirname);
 // ==================== 配置文件初始化 ====================
 // 如果运行时配置不存在，则从 default 目录拷贝
 if (!fs.existsSync('config/config.yaml')) {
-    fs.copyFileSync('config/default/config.yaml', 'config/config.yaml');
+    fs.copyFileSync(path.join(__dirname, 'config/default/config.yaml'), path.join(__dirname, 'config/config.yaml'));
     console.log('已从默认配置创建 config/config.yaml');
 }
 if (!fs.existsSync('config/webapi.js')) {
-    fs.copyFileSync('config/default/webapi.js', 'config/webapi.js');
+    fs.copyFileSync(path.join(__dirname, 'config/default/webapi.js'), path.join(__dirname, 'config/webapi.js'));
     console.log('已从默认配置创建 config/webapi.js');
 }
 // 将 webapi.js 拷贝到 public 目录供前端使用
-fs.copyFileSync('config/webapi.js', 'src/public/webapi.js');
+fs.copyFileSync(path.join(__dirname, 'config/webapi.js'), path.join(__dirname, 'src/public/webapi.js'));
 
 // 读取服务端配置
-const yaml = require('yaml');
-const configText = fs.readFileSync('config/config.yaml', 'utf8');
-const config = yaml.parse(configText);
+const config = runtime.config;
 
 // 读取 webapi 配置
-const webapiConfig = require('./config/webapi.js');
+const webapiConfig = runtime.webapi;
 
 // 静态文件（挂载在 BASE_PATH 基础路径下）
-const BASE_PATH = webapiConfig.BASE_PATH || '/order';
-app.use(BASE_PATH, express.static(path.join(__dirname, 'src/public')));
+const BASE_PATH = runtime.basePath;
+app.use(BASE_PATH, express.static(path.join(__dirname, 'src/public'), {
+    setHeaders(res, filePath) {
+        if (/\.(html|js|css)$/i.test(filePath) || /webapi\.js$/i.test(filePath)) {
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
+        }
+    }
+}));
 
 // ==================== 按需启动集成服务 ====================
 /**
@@ -61,7 +72,7 @@ if (isMountPath(webapiConfig.bili_api)) {
     // 设置服务
     const biliPath = webapiConfig.bili_api || '/bili-api';
     app.use(BASE_PATH + biliPath, biliRouter);
-    console.log(`B站开放平台API服务已挂载：http://localhost:${config.web_server_port}${BASE_PATH}${biliPath}`);
+    console.log(`B站开放平台API服务已挂载：http://localhost:${runtime.port}${BASE_PATH}${biliPath}`);
 } else {
     console.log(`B站API服务为独立服务：${webapiConfig.bili_api}`);
 }
@@ -78,6 +89,7 @@ if (isMountPath(webapiConfig.netease_api)) {
                 return res.status(404).json({ error: `未知的网易云API: ${apiPath}` });
             }
             const query = { ...req.query, ...req.body };
+            if (!query.cookie) query.cookie = localStore.getNeteaseCookie();
             const result = await apiFunc(query);
             res.status(result.status).json(result.body);
         } catch (error) {
@@ -91,7 +103,7 @@ if (isMountPath(webapiConfig.netease_api)) {
             });
         }
     });
-    console.log(`网易云音乐API服务已挂载：http://localhost:${config.web_server_port}${BASE_PATH}${neteasePath}`);
+    console.log(`网易云音乐API服务已挂载：http://localhost:${runtime.port}${BASE_PATH}${neteasePath}`);
 } else {
     console.log(`网易云音乐API服务为独立服务：${webapiConfig.netease_api}`);
 }
@@ -111,8 +123,8 @@ function getLocalIPs() {
 }
 
 // 监听端口
-const host = config.web_server_host || '0.0.0.0';
-const port = Number(process.env.DAMUKU_PORT || config.web_server_port);
+const host = runtime.host;
+const port = runtime.port;
 const server = app.listen(port, host, () => {
     console.log("=================服务已启动==================");
     console.log(`本地地址：http://localhost:${port}${BASE_PATH}`);

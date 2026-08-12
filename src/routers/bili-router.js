@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const encrypt = require('../utils/encrypt');
+const { LocalStore, mergeSettings } = require('../services/local-store');
 
 // 创建axios实例，指向B站开放平台
 const api = axios.create({
@@ -30,9 +31,10 @@ const sharedOrderStates = new Map();
 const sharedOrderCommands = new Map();
 // 网易云 Cookie 只在当前 Node 进程内存中短暂转发，不写入状态文件或日志。
 const sharedRuntimeCredentials = new Map();
+const localStore = new LocalStore(path.resolve(__dirname, '../..'));
 let sharedOrderCommandSeq = 0;
 const SYNC_PUBLISHER_LEASE_MS = 5000;
-const sharedSyncDir = path.join(__dirname, '../../logs/order-sync');
+const sharedSyncDir = localStore.cacheDir;
 fs.mkdirSync(sharedSyncDir, { recursive: true });
 
 function syncFilePath(prefix, roomId) {
@@ -67,7 +69,9 @@ function defaultRoomState() {
         idleSongCount: 0,
         playbackAction: null,
         playbackActionId: '',
-        settings: { order: null, login: null },
+        settings: { order: mergeSettings().order, login: null },
+        commandResult: null,
+        lastSongListRequestId: '',
         publisherId: null,
         publisherStartedAt: 0,
         publisherHeartbeatAt: 0,
@@ -128,18 +132,38 @@ function normalizeRoomState(input = {}) {
             : -1,
         idleSongCount: idleSongList.length,
         settings: {
-            order: input.settings?.order || null,
-            login: input.settings?.login || null
-        }
+            order: mergeSettings({ order: input.settings?.order || {} }).order,
+            login: input.settings?.login && typeof input.settings.login === 'object'
+                ? {
+                    platform: String(input.settings.login.platform || ''),
+                    songListId: String(input.settings.login.songListId || ''),
+                    songListHistory: Array.isArray(input.settings.login.songListHistory)
+                        ? input.settings.login.songListHistory.slice(-100)
+                        : [],
+                    neteaseLoginStatus: input.settings.login.neteaseLoginStatus || null
+                }
+                : null
+        },
+        commandResult: input.commandResult || null,
+        lastSongListRequestId: String(input.lastSongListRequestId || '')
     };
 }
 
 function readRoomState(roomId) {
-    const state = readSyncFile(
+    const stored = readSyncFile(
         syncFilePath('state', roomId),
         sharedOrderStates.get(roomId) || null
     );
-    return normalizeRoomState(state || {});
+    const storedSettings = localStore.getSettings(roomId);
+    const state = stored || {};
+    return normalizeRoomState({
+        ...state,
+        settings: {
+            ...(state.settings || {}),
+            order: state.settings?.order || storedSettings.order,
+            login: state.settings?.login || storedSettings.login
+        }
+    });
 }
 
 function persistRoomState(roomId, state, { bumpRevision = true } = {}) {
@@ -162,29 +186,99 @@ function appendNextIdleSong(state) {
     return order;
 }
 
+function shuffleOnce(list) {
+    const result = list.slice();
+    for (let i = result.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [result[i], result[j]] = [result[j], result[i]];
+    }
+    return result;
+}
+
 function applyRoomCommand(roomId, command) {
     const state = readRoomState(roomId);
     const value = command.value;
+    let result = { accepted: true, command: command.command };
     switch (command.command) {
         case 'loadSongList': {
             const payload = value && typeof value === 'object' ? value : { listId: value };
             const list = normalizeIdleSongList(payload.songList);
-            if (list.length) {
-                state.idleSongList = list;
-                state.idleIndex = -1;
+            const listId = String(payload.listId || '').trim();
+            const requestId = String(payload.requestId || command.requestId || '');
+            const requestOrder = Number(requestId.split('-')[0]) || 0;
+            const previousOrder = Number(String(state.lastSongListRequestId || '').split('-')[0]) || 0;
+            if (requestOrder && previousOrder && requestOrder < previousOrder) {
+                result = { accepted: false, command: command.command, reason: '请求已过期', requestId };
+                state.commandResult = result;
+                return { state, result };
             }
-            if (payload.listId != null) state.songListId = String(payload.listId);
-            if (!state.queue.length && !state.currentSong) {
+            if (!listId || !list.length) {
+                result = { accepted: false, command: command.command, reason: !listId ? '歌单ID不能为空' : '歌单为空或格式无效', requestId };
+                state.commandResult = result;
+                return { state, result };
+            }
+
+            // 原子切换：先保留用户点歌，再移除所有旧的空闲歌单歌曲。
+            const current = state.queue[0] || null;
+            const userQueue = state.queue.filter(order => Number(order.uid) !== 0);
+            state.idleSongList = shuffleOnce(list);
+            state.idleIndex = -1;
+            state.songListId = listId;
+            state.lastSongListRequestId = requestId;
+            state.settings.login = {
+                ...(state.settings.login || {}),
+                platform: String(payload.platform || state.settings.login?.platform || list[0]?.song?.platform || ''),
+                songListId: listId
+            };
+            localStore.updateSettings(roomId, { login: state.settings.login }, null);
+            state.queue = current && Number(current.uid) !== 0 ? userQueue : [];
+            if (!current || Number(current.uid) === 0) {
                 appendNextIdleSong(state);
-                state.currentSong = state.queue[0]?.song || null;
-                state.currentRequester = state.queue[0]?.uname || '';
+                state.queue.push(...userQueue);
             }
+            state.currentSong = state.queue[0]?.song || null;
+            state.currentRequester = state.queue[0]?.uname || '';
+            state.status = state.currentSong ? '等待播放' : '等待点歌';
+            result = {
+                accepted: true,
+                command: command.command,
+                switched: true,
+                startsImmediately: Number(current?.uid || 0) === 0 || !current,
+                songListId: state.songListId,
+                requestId
+            };
             break;
         }
         case 'addOrder': {
             const order = normalizeOrder(value, 0, '');
-            if (!order) break;
-            if (state.queue.some(item => item.song.sid === order.song.sid)) break;
+            if (!order || order.uid === 0) {
+                result = { accepted: false, command: command.command, reason: '点歌数据无效' };
+                break;
+            }
+            const orderSettings = state.settings.order || mergeSettings().order;
+            const userOrders = state.queue.filter(item => Number(item.uid) === Number(order.uid));
+            const activeOrders = state.queue.filter(item => Number(item.uid) !== 0);
+            if (userOrders.length >= orderSettings.userMaxOrder) {
+                result = { accepted: false, command: command.command, reason: '该用户点歌数已达上限' };
+                break;
+            }
+            if (activeOrders.length >= orderSettings.globalMaxOrder) {
+                result = { accepted: false, command: command.command, reason: '点歌队列已达上限' };
+                break;
+            }
+            if (orderSettings.orderMaxDuration > 0 && order.song.duration > orderSettings.orderMaxDuration) {
+                result = { accepted: false, command: command.command, reason: '歌曲超过时长限制' };
+                break;
+            }
+            if (orderSettings.userBlackList.some(item => String(item.uid) === String(order.uid)) ||
+                orderSettings.songBlackList.some(item => String(item.sid) === String(order.song.sid))) {
+                result = { accepted: false, command: command.command, reason: '用户或歌曲在黑名单中' };
+                break;
+            }
+            if (state.queue.some(item => item.song.sid === order.song.sid)) {
+                result = { accepted: false, command: command.command, reason: '歌曲已在点歌列表中' };
+                break;
+            }
             state.queue.push(order);
             if (!state.currentSong) {
                 state.currentSong = order.song;
@@ -211,9 +305,15 @@ function applyRoomCommand(roomId, command) {
             break;
         case 'settings':
             state.settings = {
-                order: value?.order || state.settings.order || null,
-                login: value?.login || state.settings.login || null
+                order: mergeSettings({ order: { ...state.settings.order, ...(value?.order || {}) } }).order,
+                login: value?.login && typeof value.login === 'object'
+                    ? { ...state.settings.login, ...value.login }
+                    : state.settings.login
             };
+            localStore.updateSettings(roomId, { order: state.settings.order, login: state.settings.login }, null);
+            if (value?.display && typeof value.display === 'object') {
+                localStore.updateSettings(null, { display: value.display }, null);
+            }
             if (value?.login?.songListId) state.songListId = String(value.login.songListId);
             break;
         case 'pause':
@@ -223,9 +323,10 @@ function applyRoomCommand(roomId, command) {
         default:
             break;
     }
+    state.commandResult = result;
     state.playbackAction = command.command;
     state.playbackActionId = String(command.id || '');
-    return persistRoomState(roomId, state);
+    return { state: persistRoomState(roomId, state), result };
 }
 
 const MIXIN_KEY_TABLE = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13];
@@ -241,7 +342,7 @@ function wbiSign(params, mixinKey) {
 router.use((req, res, next) => {
     if (req.path.startsWith('/live/')) {
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
         if (req.method === 'OPTIONS') return res.sendStatus(204);
     }
@@ -250,15 +351,59 @@ router.use((req, res, next) => {
 
 // 给可能仍在浏览器缓存中的页面提供轻量级后端探针。
 router.get('/live/health', (req, res) => {
-    res.json({ code: 0, data: { service: 'order', pid: process.pid, now: Date.now() } });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ code: 0, data: { service: 'order', pid: process.pid, now: Date.now(), buildId: process.env.DAMUKU_BUILD_ID || '' } });
+});
+
+router.get('/live/settings', (req, res) => {
+    const roomId = String(req.query.room_id || req.query.roomid || 'default');
+    const room = readRoomState(roomId);
+    const global = localStore.getSettings(null);
+    const roomSettings = localStore.getSettings(roomId);
+    const globalPath = localStore.settingsPath(null);
+    res.json({
+        code: 0,
+        data: {
+            revision: roomSettings.revision || global.revision || 0,
+            hasStored: fs.existsSync(globalPath) || fs.existsSync(localStore.settingsPath(roomId)),
+            order: room.settings?.order || roomSettings.order || global.order,
+            display: global.display,
+            login: room.settings?.login || null
+        }
+    });
+});
+
+router.put('/live/settings', (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    const incoming = req.body?.settings || {};
+    const current = readRoomState(roomId);
+    const expectedRevision = req.body?.revision;
+    const currentRevision = Number(localStore.getSettings(roomId).revision || 0);
+    if (expectedRevision != null && Number(expectedRevision) !== currentRevision) {
+        return res.status(409).json({ code: -1, message: '设置版本已更新', data: current.settings });
+    }
+    const saved = localStore.updateSettings(roomId, {
+        order: incoming.order,
+        display: incoming.display
+    }, null);
+    const next = {
+        ...current,
+        settings: {
+            ...current.settings,
+            order: saved.settings.order,
+            login: incoming.login || current.settings.login
+        }
+    };
+    const persisted = persistRoomState(roomId, next);
+    res.json({ code: 0, data: { ...saved.settings, login: persisted.settings.login }, state: persisted });
 });
 
 // 让控制页和 OBS 播放页使用同一份网易云登录态。
 // 这是本机页面之间的临时同步，服务重启后会自动清空，不会落盘。
 router.get('/live/sync-credentials', (req, res) => {
     const roomId = String(req.query.room_id || req.query.roomid || 'default');
-    const cookie = sharedRuntimeCredentials.get(roomId) || null;
-    res.json({ code: 0, data: { netease_cookie: cookie, hasNeteaseCookie: Boolean(cookie) } });
+    const cookie = sharedRuntimeCredentials.get(roomId) || localStore.getNeteaseCookie();
+    res.json({ code: 0, data: { hasNeteaseCookie: Boolean(cookie) } });
 });
 
 router.post('/live/sync-credentials', (req, res) => {
@@ -266,11 +411,19 @@ router.post('/live/sync-credentials', (req, res) => {
     const cookie = req.body?.netease_cookie;
     if (typeof cookie === 'string' && cookie.trim()) {
         sharedRuntimeCredentials.set(roomId, cookie);
+        localStore.saveNeteaseCookie(cookie);
     }
     res.json({
         code: 0,
         data: { hasNeteaseCookie: Boolean(sharedRuntimeCredentials.get(roomId)) }
     });
+});
+
+router.delete('/live/sync-credentials', (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || req.query.room_id || 'default');
+    sharedRuntimeCredentials.delete(roomId);
+    localStore.clearNeteaseCookie();
+    res.json({ code: 0, data: { hasNeteaseCookie: false } });
 });
 
 // OBS 浏览器源与外部浏览器之间的点歌状态同步
@@ -376,13 +529,19 @@ router.post('/live/sync-command', (req, res) => {
         sequence: Math.max(sharedOrderCommandSeq, lastSequence) + 1,
         createdAt: Date.now()
     };
-    const canonicalState = applyRoomCommand(roomId, nextCommand);
+    const applied = applyRoomCommand(roomId, nextCommand);
+    const canonicalState = applied.state;
     nextCommand.state = canonicalState;
+    nextCommand.result = applied.result;
     sharedOrderCommandSeq = nextCommand.sequence;
     const nextList = [...list, nextCommand].slice(-100);
     writeSyncFile(filePath, nextList);
     sharedOrderCommands.set(roomId, nextList);
-    res.json({ code: 0, data: canonicalState });
+    res.status(applied.result.accepted === false ? 400 : 200).json({
+        code: applied.result.accepted === false ? -1 : 0,
+        data: canonicalState,
+        result: applied.result
+    });
 });
 
 router.get('/live/sync-commands', (req, res) => {

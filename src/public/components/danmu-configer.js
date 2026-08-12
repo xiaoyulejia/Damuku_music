@@ -72,22 +72,27 @@ class DanmuConfiger {
             }
 
             // 添加点歌信息到点歌列表  
-            musicPlayer.addOrder(order);
+            await musicPlayer.addOrder(order);
 
             // 点歌只提交给后端，当前歌曲、队列位置和是否立即播放由后端统一决定。
 
         } else if (danmuMsg == "切歌") {
 
+            const current = musicPlayer.orderList[0];
+            if (!current) {
+                publicMethod.pageAlert("当前没有可切换的歌曲");
+                return;
+            }
             // 是否为空闲歌单歌曲
-            const isOwner = musicPlayer.orderList[0].uid == 0;
+            const isOwner = current.uid == 0;
             // 是否为管理员
             const isAdmin = userDanmu.uid == this.adminId;
             // 是否为用户自己的歌曲
-            const isFree = musicPlayer.orderList[0].uid == userDanmu.uid;
+            const isFree = current.uid == userDanmu.uid;
 
             if (isOwner || isAdmin || isFree) {
                 // 如果当前播放的是空闲歌单、用户歌曲，或者发送命令的是管理员，则播放下一首歌曲
-                musicPlayer.playNext();
+                musicPlayer.requestNext();
             } else {
                 publicMethod.pageAlert("不能切别人点的歌哦(^o^)");
             }

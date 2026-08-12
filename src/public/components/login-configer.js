@@ -28,6 +28,10 @@ class LoginConfiger {
         state: 'checking',
         text: '检查中...'
     };
+    songListSwitchSequence = 0;
+    activeSongListSwitchSequence = 0;
+    lastSongListRequestStamp = 0;
+    songListStatusTimer = null;
 
     constructor() {
         // 加载历史歌单列表
@@ -51,12 +55,6 @@ class LoginConfiger {
         if (!musicPlayer.isMirrorMode) this.publishSharedState();
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.login);
-        });
-        window.addEventListener('bilibili-ordersong-command', event => {
-            const command = event.detail;
-            if (!musicPlayer.isMirrorMode && command?.command === 'loadSongList') {
-                this.loadSongList(command.value);
-            }
         });
         window.addEventListener('bilibili-ordersong-credentials-changed', () => {
             // 播放端之前因没有登录态加载失败时，收到 Cookie 后自动重试一次。
@@ -90,16 +88,38 @@ class LoginConfiger {
         document.getElementById('loadSongList').onclick = () => this.loadSongList();
 
         // 选择历史歌单ID
-        document.getElementById('selectSongList').onclick = () => {
-            const listId = this.elem_songListHistory.value || this.elem_songListHistory.options?.[0]?.value;
-            if (!listId) {
+        document.getElementById('selectSongList').onclick = async () => {
+            const selected = this.getSelectedHistoryItem();
+            if (!selected) {
                 publicMethod.pageAlert("未选择歌单！");
                 return;
             }
-            this.loadSongList(listId);
+            await this.switchSongList(selected.listId, 'history', selected.platform);
         };
         document.getElementById('deleteSongListHistory').onclick = () => this.deleteSongListHistory();
         document.getElementById('clearSongListHistory').onclick = () => this.clearSongListHistory();
+    }
+
+    setSongListSwitchStatus(message, state = 'loading', autoClearMs = 0) {
+        const element = document.getElementById('songListSwitchStatus');
+        if (!element) return;
+        clearTimeout(this.songListStatusTimer);
+        element.textContent = message || '';
+        element.dataset.state = state;
+        if (autoClearMs > 0) {
+            this.songListStatusTimer = setTimeout(() => {
+                element.textContent = '';
+                element.dataset.state = '';
+            }, autoClearMs);
+        }
+    }
+
+    setSongListSwitchControlsDisabled(disabled) {
+        for (const id of ['loadSongList', 'selectSongList', 'deleteSongListHistory', 'clearSongListHistory', 'musicPlatformSelect']) {
+            const element = document.getElementById(id);
+            if (element) element.disabled = disabled;
+        }
+        if (this.elem_songListHistory) this.elem_songListHistory.disabled = disabled;
     }
 
     getSharedState() {
@@ -256,33 +276,80 @@ class LoginConfiger {
         }
     }
 
-    // 加载空闲歌单
-    async loadSongList(listId = document.getElementById("songListId").value) {
+    getSelectedHistoryItem() {
+        const selectedIndex = this.elem_songListHistory?.selectedIndex ?? -1;
+        const selectedOption = selectedIndex >= 0 ? this.elem_songListHistory.options[selectedIndex] : null;
+        const selectedId = selectedOption?.value || '';
+        const platform = selectedOption?.dataset?.platform || musicServer.platform;
+        return this.songListHistory.find(item => item.platform === platform && String(item.listId) === String(selectedId)) || null;
+    }
+
+    // 所有歌单切换都经过同一个入口，成功前不修改当前权威状态。
+    async switchSongList(listId, source = 'manual', platform = musicServer.platform) {
         listId = String(listId || '').trim();
-        document.getElementById("songListId").value = listId;
-        // 无效ID
         if (!listId) {
             publicMethod.pageAlert("请输入有效歌单ID");
-            return;
+            return false;
         }
-
-        // 控制页也先读取歌单，然后把完整列表交给后端保存；OBS 不再依赖
-        // 自己的 localStorage 或浏览器 Cookie 才能看到控制页选择的歌单。
-        let songList = await musicServer.getServer().getSongList(listId);
-        this.songListId = listId;
-        this.addSongListHistory(listId);
-        localStorage.setItem("songListId", this.songListId);
-        this.publishSharedState();
-        musicPlayer.sendCommand('loadSongList', {
-            listId,
-            songList: publicMethod.shuffle(Array.isArray(songList) ? songList : [])
-        });
-        if (songList.length) {
-            publicMethod.pageAlert("已将空闲歌单交给后端，OBS 将自动开始播放");
+        const previousPlatform = musicServer.platform;
+        musicServer.changePlatform(platform);
+        const switchSequence = ++this.songListSwitchSequence;
+        this.activeSongListSwitchSequence = switchSequence;
+        let requestStamp = Date.now();
+        if (requestStamp <= this.lastSongListRequestStamp) requestStamp = this.lastSongListRequestStamp + 1;
+        this.lastSongListRequestStamp = requestStamp;
+        this.setSongListSwitchControlsDisabled(true);
+        this.setSongListSwitchStatus('正在获取歌单，请稍候…', 'loading');
+        try {
+            const songList = await musicServer.getServer(platform).getSongList(listId);
+            if (switchSequence !== this.activeSongListSwitchSequence) return false;
+            if (!Array.isArray(songList) || !songList.length) {
+                if (this.activeSongListSwitchSequence === switchSequence) musicServer.changePlatform(previousPlatform);
+                const message = source === 'history' ? '历史歌单为空或获取失败，当前歌单保持不变' : '歌单为空或获取失败，当前歌单保持不变';
+                this.setSongListSwitchStatus(message, 'error', 6000);
+                publicMethod.pageAlert(message);
+                return false;
+            }
+            this.setSongListSwitchStatus(`歌单已获取（${songList.length} 首），正在同步到 OBS…`, 'loading');
+            const requestId = `${requestStamp}-${Math.random().toString(36).slice(2)}`;
+            const response = await musicPlayer.sendCommand('loadSongList', {
+                requestId,
+                platform,
+                listId,
+                songList
+            });
+            if (switchSequence !== this.activeSongListSwitchSequence) return false;
+            if (!response?.ok || response.result?.result?.accepted === false || response.result?.result?.switched !== true) {
+                const message = response?.result?.result?.reason || '后端拒绝切换歌单，当前歌单保持不变';
+                this.setSongListSwitchStatus(message, 'error', 6000);
+                publicMethod.pageAlert(message);
+                return false;
+            }
+            this.songListId = listId;
+            document.getElementById("songListId").value = listId;
+            this.addSongListHistory(listId, platform);
+            localStorage.setItem("songListId", this.songListId);
+            this.publishSharedState();
+            this.setSongListSwitchStatus('歌单切换成功，OBS 已收到新歌单。', 'success', 5000);
+            publicMethod.pageAlert('歌单切换成功');
             return true;
+        } catch (error) {
+            if (this.activeSongListSwitchSequence === switchSequence) musicServer.changePlatform(previousPlatform);
+            if (switchSequence === this.activeSongListSwitchSequence) {
+                const message = `歌单切换失败：${error.message || '网络错误'}`;
+                this.setSongListSwitchStatus(message, 'error', 6000);
+                publicMethod.pageAlert(message);
+            }
+            return false;
+        } finally {
+            if (switchSequence === this.activeSongListSwitchSequence) {
+                this.setSongListSwitchControlsDisabled(false);
+            }
         }
-        publicMethod.pageAlert("歌单暂时获取失败，已通知 OBS 使用共享登录态重试");
-        return false;
+    }
+
+    async loadSongList(listId = document.getElementById("songListId").value) {
+        return this.switchSongList(listId, 'manual', musicServer.platform);
     }
 
     // 加载历史歌单列表
@@ -295,21 +362,19 @@ class LoginConfiger {
 
         // 加载历史歌单到设置页面中
         for (let i = 0; i < this.songListHistory.length; i++) {
-            if (this.songListHistory[i].platform != musicServer.platform) {
-                continue;
-            }
             let option = document.createElement('option');
             option.value = this.songListHistory[i].listId;
             option.textContent = this.songListHistory[i].listName;
+            option.dataset.platform = this.songListHistory[i].platform;
             this.elem_songListHistory.appendChild(option);
         }
     }
 
     // 添加历史歌单ID
-    addSongListHistory(listId) {
+    addSongListHistory(listId, platform = musicServer.platform) {
         // 歌单ID查重
         for (let i = 0; i < this.songListHistory.length; i++) {
-            if (this.songListHistory[i].platform == musicServer.platform &&
+            if (this.songListHistory[i].platform == platform &&
                 this.songListHistory[i].listId == listId) {
                 return;
             }
@@ -321,7 +386,7 @@ class LoginConfiger {
 
         // 添加歌单信息
         this.songListHistory.push({
-            platform: musicServer.platform,
+            platform,
             listId: listId,
             listName: listId
         });
@@ -330,6 +395,7 @@ class LoginConfiger {
         let elem_option = document.createElement('option');
         elem_option.value = listId;
         elem_option.textContent = listId;
+        elem_option.dataset.platform = platform;
         this.elem_songListHistory.appendChild(elem_option);
 
         // 保存配置信息
@@ -344,8 +410,8 @@ class LoginConfiger {
             return;
         }
 
-        const visibleItems = this.songListHistory.filter(item => item.platform === musicServer.platform);
-        const selectedItem = visibleItems[selectIndex];
+        const selectedOption = this.elem_songListHistory.options[selectIndex];
+        const selectedItem = this.songListHistory.find(item => item.platform === selectedOption?.dataset?.platform && String(item.listId) === String(selectedOption?.value));
         if (!selectedItem) return;
 
         this.songListHistory = this.songListHistory.filter(item => item !== selectedItem);

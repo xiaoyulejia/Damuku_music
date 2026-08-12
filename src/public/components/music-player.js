@@ -33,6 +33,7 @@ class MusicPlayer {
     playbackRequestId = 0;
     errorNextTimer = null;
     overLimitTriggered = false;
+    autoSkipCount = 0;
 
     // 当前播放歌曲，用于同步 H5 播放卡片
     currentSong = null;
@@ -145,7 +146,7 @@ class MusicPlayer {
     }
 
     getSyncApiBase() {
-        const configured = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+        const configured = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
         if (configured) return configured;
         // 直播姬内置 WebView 可能执行配置脚本较晚，使用当前页面路径兜底。
         return new URL('./bili-api', window.location.href).pathname.replace(/\/$/, '');
@@ -348,14 +349,8 @@ class MusicPlayer {
                 cache: 'no-store'
             });
             const result = await response.json();
-            const cookie = result.data?.netease_cookie;
-            if (result.code !== 0 || typeof cookie !== 'string' || !cookie.trim()) return false;
-            const server = musicServer.getServer('wy');
-            if (server.cookie === cookie) return false;
-            server.cookie = cookie;
-            localStorage.setItem('wycookie', cookie);
+            if (result.code !== 0 || !result.data?.hasNeteaseCookie) return false;
             this.debugLog('已接收共享网易云登录态', { hasCookie: true });
-            window.dispatchEvent(new CustomEvent('bilibili-ordersong-credentials-changed'));
             return true;
         } catch (error) {
             this.debugLog('读取共享网易云登录态失败', { message: error.message });
@@ -532,7 +527,7 @@ class MusicPlayer {
             if (ok && this.isMirrorMode && result?.data) {
                 this.applySharedState(result.data);
             }
-            return { ok, status: response.status, result };
+            return { ok, status: response.status, result, state: result?.data || null };
         } catch (error) {
             this.debugLog('控制指令 HTTP 请求失败', {
                 command: command.command,
@@ -829,9 +824,23 @@ class MusicPlayer {
         if (!songurl) {
             if (requestId !== this.playbackRequestId) return;
             publicMethod.pageAlert("获取歌曲链接失败，即将播放下一首...");
-            // 清除切歌锁，允许下一首播放
+            this.autoSkipCount += 1;
+            const autoSkipLimit = Math.max(1, this.orderList.length + this.idleSongList.length);
+            if (this.autoSkipCount > autoSkipLimit) {
+                this.isSwitching = false;
+                this.pendingNext = false;
+                this.updatePlayerState('歌曲链接获取失败，请检查歌单或网络');
+                publicMethod.pageAlert('连续歌曲链接获取失败，已停止自动切歌');
+                return;
+            }
+            clearTimeout(this.errorNextTimer);
+            this.errorNextTimer = setTimeout(() => {
+                if (requestId !== this.playbackRequestId) return;
+                this.isSwitching = false;
+                this.pendingNext = false;
+                this.playNext();
+            }, 1500);
             this.isSwitching = false;
-            this._flushPending();
             return;
         }
 
@@ -847,6 +856,7 @@ class MusicPlayer {
         }
 
         this.audio.src = songurl;
+        this.autoSkipCount = 0;
         this.loadedAudioSongId = String(song.sid);
         this.debugLog('已设置 audio.src', {
             src: this.describeAudioUrl(songurl),
@@ -1030,7 +1040,20 @@ class MusicPlayer {
 
     // 播放下一首
     async playNext() {
-        this.sendCommand('next');
+        return this.sendCommand('next');
+    }
+
+    async requestNext(user = null) {
+        const current = this.orderList[0];
+        if (!current) {
+            publicMethod.pageAlert('当前没有可切换的歌曲');
+            return { ok: false, reason: 'empty-queue' };
+        }
+        if (user && Number(current.uid) !== 0 && Number(current.uid) !== Number(user.uid) && Number(user.uid) !== Number(window.__adminId || 0)) {
+            publicMethod.pageAlert('不能切别人点的歌哦(^o^)');
+            return { ok: false, reason: 'not-owner' };
+        }
+        return this.playNext();
     }
 
     // 检查并执行待处理的切歌请求
@@ -1046,12 +1069,16 @@ class MusicPlayer {
     }
 
     // 添加点歌对象
-    addOrder(order) {
+    async addOrder(order) {
         // 检查点歌信息
         if (!this.checkOrder(order)) {
             return false;
         }
-        this.sendCommand('addOrder', order);
+        const result = await this.sendCommand('addOrder', order);
+        if (!result?.ok) {
+            publicMethod.pageAlert(result?.result?.result?.reason || '点歌被后端拒绝');
+            return false;
+        }
 
         // 同时存储到配置项的历史用户列表、历史点歌列表中，忽略空闲歌单歌曲
         if (order.uid != 0) {

@@ -428,6 +428,26 @@
     line-height: 1.7;
 }
 
+#songListSwitchStatus {
+    display: block;
+    min-height: 18px;
+    margin-top: 6px;
+    color: #8d8ea8;
+    font-size: 12px;
+}
+
+#songListSwitchStatus[data-state="loading"] {
+    color: #d9b86c;
+}
+
+#songListSwitchStatus[data-state="success"] {
+    color: #72c994;
+}
+
+#songListSwitchStatus[data-state="error"] {
+    color: #e58b8b;
+}
+
 .settingsOnly .customCssCell {
     padding: 16px !important;
 }

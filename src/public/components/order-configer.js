@@ -78,6 +78,10 @@ class OrderConfiger {
 
     getSharedState() {
         return {
+            userMaxOrder: Number(this.userMaxOrder),
+            globalMaxOrder: Number(this.globalMaxOrder),
+            orderMaxDuration: Number(this.orderMaxDuration),
+            overLimitSkip: Number(this.overLimitSkip),
             userHistory: this.userHistory,
             songHistory: this.songHistory,
             userBlackList: this.userBlackList,
@@ -95,11 +99,27 @@ class OrderConfiger {
 
     applySharedState(state) {
         if (!state) return;
+        const bounded = (value, fallback, min, max) => {
+            const number = Number(value);
+            return Number.isFinite(number) ? Math.max(min, Math.min(max, Math.trunc(number))) : fallback;
+        };
+        if (state.userMaxOrder != null) this.userMaxOrder = bounded(state.userMaxOrder, this.userMaxOrder, 1, 1000);
+        if (state.globalMaxOrder != null) this.globalMaxOrder = bounded(state.globalMaxOrder, this.globalMaxOrder, 1, 10000);
+        if (state.orderMaxDuration != null) this.orderMaxDuration = bounded(state.orderMaxDuration, this.orderMaxDuration, 0, 86400);
+        if (state.overLimitSkip != null) this.overLimitSkip = bounded(state.overLimitSkip, this.overLimitSkip, 0, 86400);
         if (Array.isArray(state.userHistory)) this.userHistory = state.userHistory;
         if (Array.isArray(state.songHistory)) this.songHistory = state.songHistory;
         if (Array.isArray(state.userBlackList)) this.userBlackList = state.userBlackList;
         if (Array.isArray(state.songBlackList)) this.songBlackList = state.songBlackList;
 
+        this.elem_userMaxOrder.value = this.userMaxOrder;
+        this.elem_globalMaxOrder.value = this.globalMaxOrder;
+        this.elem_orderMaxDuration.value = this.orderMaxDuration;
+        this.elem_overLimitSkip.value = this.overLimitSkip;
+        localStorage.setItem("userMaxOrder", this.userMaxOrder);
+        localStorage.setItem("globalMaxOrder", this.globalMaxOrder);
+        localStorage.setItem("orderMaxDuration", this.orderMaxDuration);
+        localStorage.setItem("overLimitSkip", this.overLimitSkip);
         localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
         localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
         localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
@@ -198,6 +218,7 @@ class OrderConfiger {
         }
         this.userMaxOrder = userOrder;
         localStorage.setItem("userMaxOrder", this.userMaxOrder);
+        this.publishSharedState();
     }
 
     // 设置全局最大点歌数
@@ -208,6 +229,7 @@ class OrderConfiger {
         }
         this.globalMaxOrder = globalMaxOrder;
         localStorage.setItem("globalMaxOrder", this.globalMaxOrder);
+        this.publishSharedState();
     }
 
     // 设置最大点歌歌曲时长
@@ -218,6 +240,7 @@ class OrderConfiger {
         }
         this.orderMaxDuration = orderMaxDuration;
         localStorage.setItem("orderMaxDuration", this.orderMaxDuration);
+        this.publishSharedState();
     }
 
     // 设置歌曲限制时长
@@ -228,6 +251,7 @@ class OrderConfiger {
         }
         this.overLimitSkip = overLimitSkip;
         localStorage.setItem("overLimitSkip", this.overLimitSkip);
+        this.publishSharedState();
     }
 
     // 添加历史用户信息

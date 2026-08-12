@@ -2,7 +2,7 @@ import publicMethod from "../../utils/common.js?v=20260810-13";
 
 /** 使用普通B站直播协议接收弹幕，不再调用直播开放平台 gameStart。 */
 export default class BilibiliServer {
-    baseUrl = window.API_CONFIG.BASE_PATH + window.API_CONFIG.bili_api;
+    baseUrl = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
     socketUrl = "";
     webSocket = null;
     roomId = 0;
@@ -85,11 +85,11 @@ export default class BilibiliServer {
             ? (host.startsWith('ws') ? host : `wss://${host}/sub`)
             : selectedServer;
         // 服务端代理按旧 Dart 项目使用 protover=3 + Brotli，浏览器只接收已解析的JSON。
-        const proxyProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const proxyBase = publicMethod.resolveWebSocketBase(window.API_CONFIG?.bili_api);
         const uid = Number(params.get('uid') || 0);
         const proxyParams = new URLSearchParams({ room_id: String(this.roomId), uid: String(uid), token: info.token, host: upstreamSocketUrl });
         if (this.debug) proxyParams.set('debug', '1');
-        this.socketUrl = `${proxyProtocol}//${window.location.host}${this.baseUrl}/live/ws?${proxyParams}`;
+        this.socketUrl = `${proxyBase}/live/ws?${proxyParams}`;
         this.debugLog('弹幕鉴权信息', {
             tokenLength: info.token?.length || 0,
             tokenAppliedToAuth: Boolean(info.token && proxyParams.get('token')),

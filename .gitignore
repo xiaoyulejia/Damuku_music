@@ -6,6 +6,8 @@
 /config/webapi.js
 /src/public/webapi.js
 /logs
+/cache
+/data
 /api_reference
 
 # 本地环境变量和凭据文件

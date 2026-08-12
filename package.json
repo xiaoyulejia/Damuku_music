@@ -9,7 +9,8 @@
     "start": "pm2 start ecosystem.config.js",
     "stop": "pm2 stop Damuku_music",
     "restart": "pm2 restart Damuku_music",
-    "log": "pm2 log Damuku_music"
+    "log": "pm2 log Damuku_music",
+    "test": "node --test"
   },
   "author": "",
   "license": "ISC",

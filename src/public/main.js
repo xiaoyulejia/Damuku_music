@@ -14,6 +14,7 @@ async function initializeMainPage() {
     // source=obs 页面即使因为已有播放端而降级为监控，也保持 OBS 的纯列表布局。
     const obsDisplayMode = !settingsOnly && !['monitor', 'control', 'preview'].includes(pageRole) && requestedLiveMode;
     let liveMode = obsDisplayMode;
+    let serverDisplaySettings = null;
 
     // 页面可能来自浏览器缓存，而 Node 服务已经被关闭。先独立探测后端，
     // 不让后续按钮表现成“点击无反应”。遮罩只保留重新检查按钮。
@@ -26,7 +27,7 @@ async function initializeMainPage() {
     };
 
     const applyCustomCss = () => {
-        const customCss = localStorage.getItem('customOverlayCss') || '';
+        const customCss = serverDisplaySettings?.customOverlayCss ?? localStorage.getItem('customOverlayCss') ?? '';
         const style = document.getElementById('customOverlayStyle');
         const editor = document.getElementById('customOverlayCss');
         if (style) style.textContent = customCss;
@@ -34,14 +35,16 @@ async function initializeMainPage() {
     };
 
     const applyAppearance = () => {
-        const opacity = Number(localStorage.getItem('overlayOpacity') || 88);
-        const blur = Number(localStorage.getItem('overlayBlur') || 14);
-        const theme = localStorage.getItem('overlayTheme') || 'dark';
-        const liveShowPlayer = readFlag('liveShowPlayer', false);
-        const liveShowControls = readFlag('liveShowControls', false);
-        const liveShowQueueHeader = readFlag('liveShowQueueHeader', true);
-        const liveShowRequester = readFlag('liveShowRequester', true);
-        const liveShowAlerts = readFlag('liveShowAlerts', false);
+        const display = serverDisplaySettings || {};
+        const value = (key, fallback) => display[key] == null ? fallback : display[key];
+        const opacity = Number(value('overlayOpacity', Number(localStorage.getItem('overlayOpacity') || 88)));
+        const blur = Number(value('overlayBlur', Number(localStorage.getItem('overlayBlur') || 14)));
+        const theme = value('overlayTheme', localStorage.getItem('overlayTheme') || 'dark');
+        const liveShowPlayer = Boolean(value('liveShowPlayer', readFlag('liveShowPlayer', false)));
+        const liveShowControls = Boolean(value('liveShowControls', readFlag('liveShowControls', false)));
+        const liveShowQueueHeader = Boolean(value('liveShowQueueHeader', readFlag('liveShowQueueHeader', true)));
+        const liveShowRequester = Boolean(value('liveShowRequester', readFlag('liveShowRequester', true)));
+        const liveShowAlerts = Boolean(value('liveShowAlerts', readFlag('liveShowAlerts', false)));
         document.documentElement.style.setProperty('--overlay-opacity', String(opacity / 100));
         document.documentElement.style.setProperty('--overlay-blur', `${blur}px`);
         document.body.classList.toggle('liveMode', liveMode);
@@ -67,11 +70,27 @@ async function initializeMainPage() {
         if (blurInput) blurInput.value = String(blur);
         if (themeInput) themeInput.value = theme;
         Object.entries(liveInputs).forEach(([key, input]) => {
-            if (input) input.checked = readFlag(key, key === 'liveShowQueueHeader' || key === 'liveShowRequester');
+            if (input) input.checked = Boolean(value(key, key === 'liveShowQueueHeader' || key === 'liveShowRequester'));
         });
         if (opacityValue) opacityValue.textContent = `${opacity}%`;
         if (blurValue) blurValue.textContent = `${blur}px`;
         applyCustomCss();
+    };
+    const getDisplaySettings = () => ({
+        overlayOpacity: Number(document.getElementById('overlayOpacity')?.value || 88),
+        overlayBlur: Number(document.getElementById('overlayBlur')?.value || 14),
+        overlayTheme: document.getElementById('overlayTheme')?.value || 'dark',
+        liveShowPlayer: Boolean(document.getElementById('liveShowPlayer')?.checked),
+        liveShowControls: Boolean(document.getElementById('liveShowControls')?.checked),
+        liveShowQueueHeader: Boolean(document.getElementById('liveShowQueueHeader')?.checked),
+        liveShowRequester: Boolean(document.getElementById('liveShowRequester')?.checked),
+        liveShowAlerts: Boolean(document.getElementById('liveShowAlerts')?.checked),
+        customOverlayCss: document.getElementById('customOverlayCss')?.value || ''
+    });
+    const publishDisplaySettings = () => {
+        serverDisplaySettings = getDisplaySettings();
+        musicPlayer.sendCommand('settings', { display: serverDisplaySettings });
+        applyAppearance();
     };
     applyAppearance();
 
@@ -81,21 +100,21 @@ async function initializeMainPage() {
     const customCssEditor = document.getElementById('customOverlayCss');
     if (opacityInput) opacityInput.oninput = () => {
         localStorage.setItem('overlayOpacity', opacityInput.value);
-        applyAppearance();
+        publishDisplaySettings();
     };
     if (blurInput) blurInput.oninput = () => {
         localStorage.setItem('overlayBlur', blurInput.value);
-        applyAppearance();
+        publishDisplaySettings();
     };
     if (themeInput) themeInput.onchange = () => {
         localStorage.setItem('overlayTheme', themeInput.value);
-        applyAppearance();
+        publishDisplaySettings();
     };
     ['liveShowPlayer', 'liveShowControls', 'liveShowQueueHeader', 'liveShowRequester', 'liveShowAlerts'].forEach(key => {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
             localStorage.setItem(key, String(input.checked));
-            applyAppearance();
+            publishDisplaySettings();
         };
     });
     if (customCssEditor) customCssEditor.value = localStorage.getItem('customOverlayCss') || '';
@@ -104,10 +123,12 @@ async function initializeMainPage() {
     if (applyCustomCssButton) applyCustomCssButton.onclick = () => {
         localStorage.setItem('customOverlayCss', customCssEditor?.value || '');
         applyCustomCss();
+        publishDisplaySettings();
         publicMethod.pageAlert('自定义 CSS 已应用');
     };
     if (clearCustomCssButton) clearCustomCssButton.onclick = () => {
         localStorage.removeItem('customOverlayCss');
+        publishDisplaySettings();
         applyCustomCss();
     };
 
@@ -121,6 +142,26 @@ async function initializeMainPage() {
         elem_setting.style.height = "0px";
         elem_orderTable.onclick = null;
     }
+    const syncBaseForSettings = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
+    const syncDisplaySettings = async () => {
+        if (!syncBaseForSettings) return;
+        try {
+            const roomId = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
+            const response = await fetch(`${syncBaseForSettings}/live/settings?room_id=${encodeURIComponent(roomId)}`, { cache: 'no-store' });
+            const result = await response.json();
+            if (response.ok && result.code === 0 && result.data?.display) {
+                serverDisplaySettings = result.data.display;
+                applyAppearance();
+            }
+            if (response.ok && result.code === 0 && result.data?.order) {
+                window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
+                    detail: { order: result.data.order, login: result.data.login || null }
+                }));
+            }
+        } catch (_) { /* backend guard handles unavailable service */ }
+    };
+    syncDisplaySettings();
+    window.setInterval(syncDisplaySettings, 5000);
 
     // 隐藏设置界面
     document.getElementById('upBtn').onclick = () => {
@@ -184,34 +225,6 @@ async function initializeMainPage() {
         if (!settingsWindow) publicMethod.pageAlert('设置页被浏览器拦截，请允许弹出窗口');
     };
 
-    // 登录配置模块可能在页面恢复/热更新后丢失 DOM 事件，这里补一次幂等绑定。
-    const bindLoginButton = (id, handler) => {
-        const element = document.getElementById(id);
-        if (element) element.onclick = handler;
-    };
-    const requestSongList = (listId = document.getElementById('songListId')?.value) => {
-        listId = String(listId || '').trim();
-        const input = document.getElementById('songListId');
-        if (input) input.value = listId;
-        if (!listId) {
-            publicMethod.pageAlert('请输入有效歌单ID');
-            return;
-        }
-        loginConfiger.loadSongList(listId);
-    };
-    bindLoginButton('loadSongList', () => requestSongList());
-    bindLoginButton('selectSongList', () => {
-        const history = loginConfiger.elem_songListHistory;
-        const listId = history?.value || history?.options?.[0]?.value;
-        if (!listId) {
-            publicMethod.pageAlert('未选择歌单！');
-            return;
-        }
-        requestSongList(listId);
-    });
-    bindLoginButton('deleteSongListHistory', () => loginConfiger.deleteSongListHistory());
-    bindLoginButton('clearSongListHistory', () => loginConfiger.clearSongListHistory());
-
 }
 
 function createBackendGuard(pageParams) {
@@ -221,7 +234,7 @@ function createBackendGuard(pageParams) {
     const retryButton = document.getElementById('backendRetryBtn');
     const interactiveElements = [...document.querySelectorAll('button, input, select, textarea')]
         .filter(element => element !== retryButton && !element.closest('#backendOfflineOverlay'));
-    const configuredSyncBase = `${window.API_CONFIG?.BASE_PATH || ''}${window.API_CONFIG?.bili_api || ''}`;
+    const configuredSyncBase = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
     const syncBase = configuredSyncBase ||
         new URL('./bili-api', window.location.href).pathname.replace(/\/$/, '');
     const roomId = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
@@ -260,6 +273,17 @@ function createBackendGuard(pageParams) {
             });
             const result = await response.json();
             if (!response.ok || result.code !== 0) throw new Error('后端健康检查失败');
+            const buildId = result.data?.buildId || '';
+            const previousBuildId = sessionStorage.getItem('damukuBuildId');
+            if (buildId && previousBuildId && previousBuildId !== buildId && !sessionStorage.getItem('damukuReloadedForBuild')) {
+                sessionStorage.setItem('damukuReloadedForBuild', '1');
+                window.location.reload();
+                return true;
+            }
+            if (buildId) {
+                sessionStorage.setItem('damukuBuildId', buildId);
+                sessionStorage.removeItem('damukuReloadedForBuild');
+            }
             setAvailability(true);
             return true;
         } catch (_) {
