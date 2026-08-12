@@ -11,6 +11,7 @@ export default class BilibiliServer {
     authPacket = null;
     heartPacket = null;
     reconnectCount = 0;
+    reconnectTimer = null;
     closing = false;
     textDecoder = new TextDecoder();
     danmuMessage = null;
@@ -97,7 +98,6 @@ export default class BilibiliServer {
             serverIndex,
             hosts: servers,
             upstreamSocketUrl,
-            socketUrl: this.socketUrl,
             auth: { roomid: this.roomId, uid, protover: 3, platform: 'web', type: 2 }
         });
         if (this.debug) this.loadHistoryForDebug();
@@ -122,11 +122,23 @@ export default class BilibiliServer {
         this.webSocket.onmessage = event => {
             try {
                 const message = JSON.parse(typeof event.data === 'string' ? event.data : this.textDecoder.decode(new Uint8Array(event.data)));
-                this.debugLog('收到实时弹幕', message);
                 if (message.type === 'status') this.debugLog(`代理状态: ${message.status}`, message.detail);
-                if (message.type === 'status' && message.status === 'upstream authenticated') this.reconnectCount = 0;
+                if (message.type === 'status' && message.status === 'upstream authenticated') {
+                    this.reconnectCount = 0;
+                    if (this.debug) {
+                        console.log(`[BilibiliDanmu][WebSocket] 实时弹幕认证成功，房间 ${message.detail?.roomId || this.roomId}`);
+                    }
+                }
                 if (message.type === 'danmu' && message.data) {
-                    if (this.debug) console.table([message.data]);
+                    if (this.debug) {
+                        const receivedAt = Number(message.data.receivedAt) || Date.now();
+                        const time = new Date(receivedAt).toLocaleTimeString();
+                        console.log(
+                            `[BilibiliDanmu][WebSocket实时弹幕] ${time} 房间 ${message.data.roomId || this.roomId} ` +
+                            `${message.data.uname || '用户'}(${message.data.uid || 0}): ${message.data.danmu || ''}`,
+                            message.data
+                        );
+                    }
                     if (this.danmuMessage) this.danmuMessage(message.data);
                 }
             } catch (error) {
@@ -134,17 +146,21 @@ export default class BilibiliServer {
             }
         };
         this.webSocket.onclose = () => this.reconnectSocket();
-        this.webSocket.onerror = () => this.reconnectSocket();
+        // 浏览器会在 error 后继续触发 close，只由 close 安排重连，避免一次故障重连两次。
+        this.webSocket.onerror = error => this.debugLog('WebSocket 错误，等待 close 后重连', error);
     }
 
     reconnectSocket() {
-        if (this.closing || this.reconnectCount >= 3) {
+        if (this.closing || this.reconnectTimer || this.reconnectCount >= 3) {
             if (!this.closing) publicMethod.pageAlertRepeat("重连失败，请确认网络并刷新页面!");
             return;
         }
         this.reconnectCount++;
         publicMethod.pageAlert("连接错误，正在重连...");
-        setTimeout(() => this.connect(), 3000);
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
+        }, 3000);
     }
 
     handlePacket(packet) {
@@ -234,6 +250,8 @@ export default class BilibiliServer {
 
     startHistoryConsole() {
         this.stopHistoryConsole();
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
         this.historySeen.clear();
         this.historyInitialized = false;
         const poll = async () => {
@@ -309,6 +327,8 @@ export default class BilibiliServer {
     close() {
         this.closing = true;
         this.stopHistoryConsole();
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
         clearInterval(this.timer);
         this.timer = null;
         if (this.webSocket) {

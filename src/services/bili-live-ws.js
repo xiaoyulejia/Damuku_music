@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const zlib = require('zlib');
 
 const HEADER_SIZE = 16;
+const MAX_PACKET_SIZE = 16 * 1024 * 1024;
 
 function packet(body, operation, sequence = 1) {
     const content = Buffer.isBuffer(body) ? body : Buffer.from(body);
@@ -22,11 +23,16 @@ function parseMessages(buffer, callback) {
         const header = buffer.readUInt16BE(offset + 4);
         const version = buffer.readUInt16BE(offset + 6);
         const operation = buffer.readUInt32BE(offset + 8);
-        if (total < header || offset + total > buffer.length) return;
+        const sequence = buffer.readUInt32BE(offset + 12);
+        if (header < HEADER_SIZE || total < header || total > MAX_PACKET_SIZE) {
+            throw new Error(`invalid danmu packet: total=${total}, header=${header}`);
+        }
+        if (offset + total > buffer.length) break;
         const body = buffer.subarray(offset + header, offset + total);
-        callback({ total, version, operation, body });
+        callback({ total, header, version, operation, sequence, body });
         offset += total;
     }
+    return buffer.subarray(offset);
 }
 
 function decodeBody(body, version) {
@@ -67,21 +73,27 @@ function extractJsonObjects(text) {
     return result;
 }
 
-function forwardJsonPayload(buffer, browserSocket, notify) {
+function normalizeDanmu(message, roomId) {
+    const command = String(message?.cmd || '').split(':', 1)[0];
+    if (command !== 'DANMU_MSG') return null;
+    const info = message.info || [];
+    const user = info[0]?.[15]?.user;
+    return {
+        uid: Number(user?.uid ?? info[2]?.[0] ?? 0) || 0,
+        uname: String(user?.base?.name ?? info[2]?.[1] ?? '用户'),
+        danmu: String(info[1] ?? ''),
+        roomId,
+        receivedAt: Date.now()
+    };
+}
+
+function forwardJsonPayload(buffer, browserSocket, notify, roomId) {
     const decoded = buffer.toString('utf8').replace(/^\0+/, '').replace(/\0+$/g, '').trim();
     for (const candidate of extractJsonObjects(decoded)) {
         try {
             const message = JSON.parse(candidate);
-            if (!message.cmd?.startsWith('DANMU_MSG')) {
-                continue;
-            }
-            const info = message.info || [];
-            const user = info[0]?.[15]?.user;
-            const danmu = {
-                uid: user?.uid || info[2]?.[0] || info[2]?.[1] || 0,
-                uname: user?.base?.name || info[2]?.[1] || '用户',
-                danmu: info[1] || ''
-            };
+            const danmu = normalizeDanmu(message, roomId);
+            if (!danmu) continue;
             notify('DANMU_MSG', { uid: danmu.uid, uname: danmu.uname, danmu: danmu.danmu });
             if (browserSocket.readyState === WebSocket.OPEN) browserSocket.send(JSON.stringify({ type: 'danmu', data: danmu, raw: message }));
         } catch (error) {
@@ -91,10 +103,10 @@ function forwardJsonPayload(buffer, browserSocket, notify) {
 }
 
 // 与旧 Dart 项目 LiveMessageStream.onData 的协议分支保持一致。
-function processDanmuPacket(version, body, browserSocket, notify) {
+function processDanmuPacket(version, body, browserSocket, notify, roomId) {
     if (version === 0 || version === 1) {
         // Dart: _processingData(data) -> utf8.decode(data.sublist(headerSize, totalSize))
-        forwardJsonPayload(body, browserSocket, notify);
+        forwardJsonPayload(body, browserSocket, notify, roomId);
         return;
     }
 
@@ -108,7 +120,7 @@ function processDanmuPacket(version, body, browserSocket, notify) {
         startsWithJson: decompressedText.startsWith('{') || decompressedText.startsWith('[')
     });
     if (decompressedText.startsWith('{') || decompressedText.startsWith('[')) {
-        forwardJsonPayload(decompressed, browserSocket, notify);
+        forwardJsonPayload(decompressed, browserSocket, notify, roomId);
         return;
     }
     if (decompressed.length >= 16) {
@@ -127,7 +139,7 @@ function processDanmuPacket(version, body, browserSocket, notify) {
             operation: nestedOperation,
             bodyLength: nestedBody.length
         });
-        if (nestedOperation === 5) processDanmuPacket(nestedVersion, nestedBody, browserSocket, notify);
+        if (nestedOperation === 5) processDanmuPacket(nestedVersion, nestedBody, browserSocket, notify, roomId);
     });
 }
 
@@ -156,7 +168,10 @@ function createLiveProxy(upgradeRequest, browserSocket, head) {
         if (browserSocket.readyState === WebSocket.OPEN) browserSocket.send(JSON.stringify({ type: 'status', status, detail }));
     };
 
+    let closing = false;
     const close = () => {
+        if (closing) return;
+        closing = true;
         clearInterval(heartbeat);
         if (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING) upstream.close();
         if (browserSocket.readyState === WebSocket.OPEN) browserSocket.close();
@@ -167,28 +182,30 @@ function createLiveProxy(upgradeRequest, browserSocket, head) {
         upstream.send(packet(JSON.stringify({ roomid: roomId, uid, protover: 3, platform: 'web', type: 2, key: token }), 7));
     });
     upstream.on('message', data => {
-        parseMessages(Buffer.from(data), ({ version, operation, body }) => {
-            notify('upstream packet', { version, operation, bodyLength: body.length });
-            if (operation === 8) {
-                heartbeat = setInterval(() => {
+        try {
+            parseMessages(Buffer.from(data), ({ version, operation, body }) => {
+                notify('upstream packet', { version, operation, bodyLength: body.length });
+                if (operation === 8) {
+                    clearInterval(heartbeat);
                     if (upstream.readyState === WebSocket.OPEN) upstream.send(packet('', 2, sequence++));
-                }, 30000);
-                notify('upstream authenticated', { roomId, version });
-                return;
-            }
-            if (operation !== 5) return;
-            try {
+                    heartbeat = setInterval(() => {
+                        if (upstream.readyState === WebSocket.OPEN) upstream.send(packet('', 2, sequence++));
+                    }, 30000);
+                    notify('upstream authenticated', { roomId, version });
+                    return;
+                }
+                if (operation !== 5) return;
                 notify('弹幕payload预览', {
                     version,
                     firstBytes: [...body.subarray(0, 16)],
                     compressed: true,
                     previewBase64: body.subarray(0, 48).toString('base64')
                 });
-                processDanmuPacket(version, body, browserSocket, notify);
-            } catch (error) {
-                notify('decode failed', { message: error.message, version, operation });
-            }
-        });
+                processDanmuPacket(version, body, browserSocket, notify, roomId);
+            });
+        } catch (error) {
+            notify('decode failed', { message: error.message });
+        }
     });
     upstream.on('error', error => {
         notify('upstream error', { message: error.message, upstreamHost });
@@ -199,6 +216,7 @@ function createLiveProxy(upgradeRequest, browserSocket, head) {
         close();
     });
     browserSocket.on('close', close);
+    browserSocket.on('error', close);
 }
 
 function attachLiveProxy(server, basePath, biliPath) {
@@ -211,4 +229,11 @@ function attachLiveProxy(server, basePath, biliPath) {
     });
 }
 
-module.exports = { attachLiveProxy };
+module.exports = {
+    attachLiveProxy,
+    packet,
+    parseMessages,
+    processDanmuPacket,
+    normalizeDanmu,
+    extractJsonObjects
+};

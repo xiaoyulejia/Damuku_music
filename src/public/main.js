@@ -2,7 +2,7 @@ import musicPlayer from './components/music-player.js?v=20260812-4';
 import './components/queue-manager.js?v=20260812-1';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
-import danmuConfiger from './components/danmu-configer.js?v=20260810-41';
+import danmuConfiger from './components/danmu-configer.js?v=20260812-1';
 import publicMethod from './utils/common.js?v=20260810-41';
 
 async function initializeMainPage() {
@@ -284,6 +284,9 @@ async function initializeMainPage() {
     // 会在这里已经降级成监控端，不会再各自加载一份空闲歌单。
     await musicPlayer.ready;
     const playbackMode = !settingsOnly && !musicPlayer.isMirrorMode;
+    const realtimeDebugObserver = !settingsOnly && musicPlayer.isMirrorMode &&
+        ['1', 'true', 'yes', 'on'].includes((pageParams.get('realtime') || '').toLowerCase()) &&
+        ['1', 'true', 'yes', 'on'].includes((pageParams.get('debug') || '').toLowerCase());
     liveMode = obsDisplayMode;
     applyAppearance();
     let playbackStarted = false;
@@ -297,6 +300,9 @@ async function initializeMainPage() {
     };
     window.addEventListener('bilibili-ordersong-publisher-claimed', startPlaybackServices);
     if (playbackMode) startPlaybackServices();
+    // 控制/镜像页通常不连接弹幕。仅在 realtime=1&debug=1 时建立只读诊断连接，
+    // 用于确认 WebSocket 实时收包；不注册点歌回调，避免和 OBS 播放页重复点歌。
+    if (realtimeDebugObserver) danmuConfiger.startDanmu({ processCommands: false });
     if (!settingsOnly && !playbackMode) musicPlayer.requestSharedState();
 
     // 播放控制。浏览器通常不允许弹幕事件直接触发声音，用户点击一次即可解锁。
