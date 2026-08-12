@@ -1,4 +1,4 @@
-import musicServer from './musicServers/music-server.js?v=20260812-16';
+import musicServer from './musicServers/music-server.js?v=20260812-18';
 import { findLineIndex, mergeTranslation, normalizeLyrics, parseLrc } from './lyric-parser.mjs';
 
 const lyricCache = new Map();

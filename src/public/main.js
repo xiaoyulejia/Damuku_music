@@ -1,11 +1,11 @@
-import musicPlayer from './components/music-player.js?v=20260812-16';
+import musicPlayer from './components/music-player.js?v=20260812-18';
 import './components/queue-manager.js?v=20260812-1';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
 import danmuConfiger from './components/danmu-configer.js?v=20260812-1';
 import publicMethod from './utils/common.js?v=20260810-41';
 
-const FRONTEND_BUILD_ID = '20260812-16';
+const FRONTEND_BUILD_ID = '20260812-18';
 window.__DAMUKU_FRONTEND_BUILD_ID = FRONTEND_BUILD_ID;
 
 async function initializeMainPage() {
@@ -73,6 +73,7 @@ async function initializeMainPage() {
             lyricsColor: localStorage.getItem('lyricsColor') || '#ffffff',
             lyricsOpacity: Number(localStorage.getItem('lyricsOpacity') || 100),
             lyricsOverlayLines: Number(localStorage.getItem('lyricsOverlayLines') || 1),
+            lyricsOverlayWidth: Number(localStorage.getItem('lyricsOverlayWidth') || 92),
             progressSeekEnabled: readFlag('progressSeekEnabled', true),
             customOverlayCss: localStorage.getItem('customOverlayCss') || ''
         },
@@ -115,6 +116,7 @@ async function initializeMainPage() {
                     'userMaxOrder', 'globalMaxOrder', 'orderMaxDuration', 'overLimitSkip',
                     'userHistory', 'songHistory', 'userBlackList', 'songBlackList',
                     'overlayOpacity', 'overlayBlur', 'overlayTheme', 'customOverlayCss',
+                    'lyricsOverlayWidth',
                     'songListId', 'songListHistory'
                 ].includes(key));
                 if (hasLegacy) {
@@ -187,6 +189,7 @@ async function initializeMainPage() {
         document.documentElement.style.setProperty('--lyrics-font-size', `${Math.max(12, Math.min(64, Number(value('lyricsFontSize', 22))))}px`);
         document.documentElement.style.setProperty('--lyrics-color', String(value('lyricsColor', '#ffffff')));
         document.documentElement.style.setProperty('--lyrics-opacity', String(Math.max(.1, Math.min(1, Number(value('lyricsOpacity', 100)) / 100))));
+        document.documentElement.style.setProperty('--lyrics-overlay-width', `${Math.max(50, Math.min(100, Number(value('lyricsOverlayWidth', 92))))}%`);
         document.body.classList.toggle('liveMode', liveMode);
         document.body.classList.toggle('lyricOverlay', lyricOnlyMode);
         document.body.classList.toggle('liveShowPlayer', liveMode && liveShowPlayer);
@@ -227,10 +230,14 @@ async function initializeMainPage() {
         const lyricsOpacityInput = document.getElementById('lyricsOpacity');
         const lyricsOpacityValue = document.getElementById('lyricsOpacityValue');
         const lyricsOverlayLinesInput = document.getElementById('lyricsOverlayLines');
+        const lyricsOverlayWidthInput = document.getElementById('lyricsOverlayWidth');
+        const lyricsOverlayWidthValue = document.getElementById('lyricsOverlayWidthValue');
         if (lyricsColorInput) lyricsColorInput.value = String(value('lyricsColor', '#ffffff'));
         if (lyricsOpacityInput) lyricsOpacityInput.value = String(value('lyricsOpacity', 100));
         if (lyricsOpacityValue) lyricsOpacityValue.textContent = `${value('lyricsOpacity', 100)}%`;
         if (lyricsOverlayLinesInput) lyricsOverlayLinesInput.value = String(value('lyricsOverlayLines', 1));
+        if (lyricsOverlayWidthInput) lyricsOverlayWidthInput.value = String(value('lyricsOverlayWidth', 92));
+        if (lyricsOverlayWidthValue) lyricsOverlayWidthValue.textContent = `${value('lyricsOverlayWidth', 92)}%`;
         applyCustomCss();
     };
     const getDisplaySettings = () => ({
@@ -249,6 +256,7 @@ async function initializeMainPage() {
         lyricsColor: document.getElementById('lyricsColor')?.value || '#ffffff',
         lyricsOpacity: Number(document.getElementById('lyricsOpacity')?.value || 100),
         lyricsOverlayLines: Number(document.getElementById('lyricsOverlayLines')?.value || 1),
+        lyricsOverlayWidth: Number(document.getElementById('lyricsOverlayWidth')?.value || 92),
         progressSeekEnabled: Boolean(document.getElementById('progressSeekEnabled')?.checked),
         customOverlayCss: document.getElementById('customOverlayCss')?.value || ''
     });
@@ -277,7 +285,7 @@ async function initializeMainPage() {
             publishDisplaySettings();
         };
     });
-    ['lyricsEnabled', 'lyricsTranslation', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'progressSeekEnabled'].forEach(key => {
+    ['lyricsEnabled', 'lyricsTranslation', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'lyricsOverlayWidth', 'progressSeekEnabled'].forEach(key => {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
             publishDisplaySettings();

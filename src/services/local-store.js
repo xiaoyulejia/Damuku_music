@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
         lyricsColor: '#ffffff',
         lyricsOpacity: 100,
         lyricsOverlayLines: 1,
+        lyricsOverlayWidth: 92,
         progressSeekEnabled: true,
         customOverlayCss: ''
     },
@@ -78,6 +79,7 @@ function mergeSettings(input = {}) {
     result.display.lyricsColor = /^#[0-9a-f]{6}$/i.test(String(display.lyricsColor || '')) ? String(display.lyricsColor) : '#ffffff';
     result.display.lyricsOpacity = numeric(display.lyricsOpacity, 100, 10, 100);
     result.display.lyricsOverlayLines = numeric(display.lyricsOverlayLines, 1, 0, 3);
+    result.display.lyricsOverlayWidth = numeric(display.lyricsOverlayWidth, 92, 50, 100);
     result.display.customOverlayCss = typeof display.customOverlayCss === 'string' ? display.customOverlayCss.slice(0, 20000) : '';
     result.login = input.login && typeof input.login === 'object'
         ? {

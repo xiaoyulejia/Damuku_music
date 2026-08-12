@@ -1,6 +1,6 @@
 import orderConfiger from "./order-configer.js?v=20260810-41";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260812-16";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-18";
 import lyricService from "../services/lyric-service.js?v=20260812-1";
 
 /**
@@ -347,14 +347,23 @@ class MusicPlayer {
             values.forEach(item => {
                 const line = document.createElement('div');
                 line.className = 'lyricsStackLine';
-                line.textContent = item.text || '';
+                const text = document.createElement('span');
+                text.className = 'lyricsText';
+                text.textContent = item.text || '';
+                line.appendChild(text);
                 element.appendChild(line);
             });
             element.hidden = values.length === 0;
         };
         if (this.isLyricOverlay()) {
-            renderStack('lyricsPrevious', this.lyricLines.slice(Math.max(0, index - overlayLineCount), index));
-            renderStack('lyricsNext', this.lyricLines.slice(index + 1, index + 1 + overlayLineCount));
+            // 第一条歌词开始前 index 为 -1，不能把 slice 的结束位置传成 -1，
+            // 否则会渲染出除最后一条之外的整份歌词。
+            const previousLines = index > 0
+                ? this.lyricLines.slice(Math.max(0, index - overlayLineCount), index)
+                : [];
+            const nextStart = index >= 0 ? index + 1 : 0;
+            renderStack('lyricsPrevious', previousLines);
+            renderStack('lyricsNext', this.lyricLines.slice(nextStart, nextStart + overlayLineCount));
         } else {
             const previousElement = document.getElementById('lyricsPrevious');
             const nextElement = document.getElementById('lyricsNext');
@@ -374,8 +383,7 @@ class MusicPlayer {
     }
 
     refreshLyricMarquees() {
-        const update = id => {
-            const container = document.getElementById(id);
+        const update = container => {
             const textElement = container?.querySelector('.lyricsText');
             if (!container || !textElement) return;
             container.classList.remove('lyricsMarquee');
@@ -389,9 +397,15 @@ class MusicPlayer {
             // 以约 85px/s 的速度滚动；长歌词不再被过高的时长上限拖慢。
             container.style.setProperty('--lyrics-marquee-duration', `${Math.max(5, Math.min(16, overflow / 85 + 1.8))}s`);
         };
-        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(update);
+        const updateContainer = id => {
+            const container = document.getElementById(id);
+            if (!container) return;
+            const stackLines = [...container.querySelectorAll('.lyricsStackLine')];
+            (stackLines.length ? stackLines : [container]).forEach(update);
+        };
+        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(updateContainer);
         if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => {
-            ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(update);
+            ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(updateContainer);
         });
     }
 
