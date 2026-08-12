@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
         liveShowAlerts: false,
         lyricsEnabled: true,
         lyricsTranslation: true,
+        lyricsDisplayMode: 'wrap',
         lyricsOffsetMs: 0,
         lyricsFontSize: 22,
         lyricsColor: '#ffffff',
@@ -74,6 +75,7 @@ function mergeSettings(input = {}) {
     for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled']) {
         result.display[key] = Boolean(display[key] ?? result.display[key]);
     }
+    result.display.lyricsDisplayMode = display.lyricsDisplayMode === 'scroll' ? 'scroll' : 'wrap';
     result.display.lyricsOffsetMs = numeric(display.lyricsOffsetMs, 0, -5000, 5000);
     result.display.lyricsFontSize = numeric(display.lyricsFontSize, 22, 12, 64);
     result.display.lyricsColor = /^#[0-9a-f]{6}$/i.test(String(display.lyricsColor || '')) ? String(display.lyricsColor) : '#ffffff';

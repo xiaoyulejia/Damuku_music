@@ -12,13 +12,13 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260812-18"></script>
+    <script type="module" src="./main.js?v=20260812-25"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-18">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-25">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
-    <link rel="stylesheet" href="./styles/setting-page.css?v=20260809-16">
+    <link rel="stylesheet" href="./styles/setting-page.css?v=20260812-24">
     <style id="customOverlayStyle"></style>
 </head>
 
@@ -300,14 +300,24 @@
                                 <td colspan="2"><label class="setting_check"><input id="lyricsTranslation" type="checkbox">显示翻译</label></td>
                             </tr>
                             <tr>
+                                <td>歌词显示方式</td>
+                                <td>
+                                    <select id="lyricsDisplayMode">
+                                        <option value="wrap">自动换行</option>
+                                        <option value="scroll">单向滚动</option>
+                                    </select>
+                                </td>
+                                <td>默认自动换行，长歌词不会横向移动</td>
+                            </tr>
+                            <tr>
                                 <td>歌词偏移</td>
                                 <td><input id="lyricsOffsetMs" type="number" min="-5000" max="5000" step="50"></td>
                                 <td>毫秒</td>
                             </tr>
                             <tr>
-                                <td>歌词字号</td>
+                                <td>歌词专用页字号</td>
                                 <td><input id="lyricsFontSize" type="number" min="12" max="64" step="1"></td>
-                                <td>像素</td>
+                                <td>像素（仅影响 lyric=true 页面）</td>
                             </tr>
                             <tr>
                                 <td>歌词颜色</td>

@@ -1,11 +1,11 @@
-import musicPlayer from './components/music-player.js?v=20260812-18';
-import './components/queue-manager.js?v=20260812-1';
+import musicPlayer from './components/music-player.js?v=20260812-25';
+import './components/queue-manager.js?v=20260812-2';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
 import danmuConfiger from './components/danmu-configer.js?v=20260812-1';
 import publicMethod from './utils/common.js?v=20260810-41';
 
-const FRONTEND_BUILD_ID = '20260812-18';
+const FRONTEND_BUILD_ID = '20260812-25';
 window.__DAMUKU_FRONTEND_BUILD_ID = FRONTEND_BUILD_ID;
 
 async function initializeMainPage() {
@@ -26,6 +26,20 @@ async function initializeMainPage() {
     let settingsSaveQueue = Promise.resolve();
     const syncBaseForSettings = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
     const roomIdForSettings = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
+
+    const syncLyricViewport = () => {
+        if (!lyricOnlyMode) return;
+        const width = Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || 1));
+        const height = Math.max(1, Math.round(window.innerHeight || document.documentElement.clientHeight || 1));
+        document.documentElement.style.setProperty('--lyric-viewport-width', `${width}px`);
+        document.documentElement.style.setProperty('--lyric-viewport-height', `${height}px`);
+        document.documentElement.dataset.lyricViewport = `${width}x${height}`;
+    };
+    if (lyricOnlyMode) {
+        syncLyricViewport();
+        window.addEventListener('resize', syncLyricViewport, { passive: true });
+        window.visualViewport?.addEventListener('resize', syncLyricViewport, { passive: true });
+    }
 
     // 页面可能来自浏览器缓存，而 Node 服务已经被关闭。先独立探测后端，
     // 不让后续按钮表现成“点击无反应”。遮罩只保留重新检查按钮。
@@ -68,6 +82,7 @@ async function initializeMainPage() {
             liveShowAlerts: readFlag('liveShowAlerts', false),
             lyricsEnabled: readFlag('lyricsEnabled', true),
             lyricsTranslation: readFlag('lyricsTranslation', true),
+            lyricsDisplayMode: localStorage.getItem('lyricsDisplayMode') === 'scroll' ? 'scroll' : 'wrap',
             lyricsOffsetMs: Number(localStorage.getItem('lyricsOffsetMs') || 0),
             lyricsFontSize: Number(localStorage.getItem('lyricsFontSize') || 22),
             lyricsColor: localStorage.getItem('lyricsColor') || '#ffffff',
@@ -116,7 +131,7 @@ async function initializeMainPage() {
                     'userMaxOrder', 'globalMaxOrder', 'orderMaxDuration', 'overLimitSkip',
                     'userHistory', 'songHistory', 'userBlackList', 'songBlackList',
                     'overlayOpacity', 'overlayBlur', 'overlayTheme', 'customOverlayCss',
-                    'lyricsOverlayWidth',
+                    'lyricsOverlayWidth', 'lyricsDisplayMode',
                     'songListId', 'songListHistory'
                 ].includes(key));
                 if (hasLegacy) {
@@ -220,6 +235,8 @@ async function initializeMainPage() {
             const input = document.getElementById(key);
             if (input) input.checked = Boolean(value(key, true));
         }
+        const lyricsDisplayModeInput = document.getElementById('lyricsDisplayMode');
+        if (lyricsDisplayModeInput) lyricsDisplayModeInput.value = value('lyricsDisplayMode', 'wrap');
         for (const key of ['lyricsOffsetMs', 'lyricsFontSize']) {
             const input = document.getElementById(key);
             if (input) input.value = String(value(key, key === 'lyricsFontSize' ? 22 : 0));
@@ -251,6 +268,7 @@ async function initializeMainPage() {
         liveShowAlerts: Boolean(document.getElementById('liveShowAlerts')?.checked),
         lyricsEnabled: Boolean(document.getElementById('lyricsEnabled')?.checked),
         lyricsTranslation: Boolean(document.getElementById('lyricsTranslation')?.checked),
+        lyricsDisplayMode: document.getElementById('lyricsDisplayMode')?.value === 'scroll' ? 'scroll' : 'wrap',
         lyricsOffsetMs: Number(document.getElementById('lyricsOffsetMs')?.value || 0),
         lyricsFontSize: Number(document.getElementById('lyricsFontSize')?.value || 22),
         lyricsColor: document.getElementById('lyricsColor')?.value || '#ffffff',
@@ -285,7 +303,7 @@ async function initializeMainPage() {
             publishDisplaySettings();
         };
     });
-    ['lyricsEnabled', 'lyricsTranslation', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'lyricsOverlayWidth', 'progressSeekEnabled'].forEach(key => {
+    ['lyricsEnabled', 'lyricsTranslation', 'lyricsDisplayMode', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'lyricsOverlayWidth', 'progressSeekEnabled'].forEach(key => {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
             publishDisplaySettings();

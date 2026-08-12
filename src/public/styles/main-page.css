@@ -257,16 +257,20 @@ h2 { font-size: 16px; }
 .lyricsLine,
 .lyricsTranslation,
 .lyricsStatus {
-    overflow: hidden;
+    overflow: visible;
     max-width: 100%;
     min-width: 0;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .lyricsText {
-    display: inline-block;
-    min-width: 100%;
-    white-space: nowrap;
+    display: block;
+    min-width: 0;
+    white-space: inherit;
+    overflow-wrap: inherit;
+    word-break: inherit;
 }
 
 .lyricsLine,
@@ -276,16 +280,22 @@ h2 { font-size: 16px; }
 
 .lyricsMarquee {
     text-align: left;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
 .lyricsMarquee .lyricsText {
     min-width: max-content;
-    animation: lyricsMarquee var(--lyrics-marquee-duration, 12s) ease-in-out infinite alternate;
+    padding-inline-end: 12px;
+    animation: lyricsMarquee var(--lyrics-marquee-duration, 1s) linear 1 normal forwards;
+    animation-delay: var(--lyrics-marquee-delay, 0s);
+    animation-play-state: var(--lyrics-marquee-play-state, paused);
+    will-change: transform;
 }
 
 @keyframes lyricsMarquee {
-    0%, 8% { transform: translateX(0); }
-    92%, 100% { transform: translateX(var(--lyrics-marquee-shift, 0px)); }
+    from { transform: translateX(0); }
+    to { transform: translateX(var(--lyrics-marquee-shift, 0px)); }
 }
 
 .lyricsPrevious,
@@ -296,14 +306,15 @@ h2 { font-size: 16px; }
 
 .lyricsCurrent {
     color: #fff;
-    font-size: var(--lyrics-font-size, 22px);
+    /* 监控/控制页保持固定字号；设置项只作用于 lyric=true 专用页。 */
+    font-size: 22px;
     font-weight: 700;
     line-height: 1.35;
 }
 
 .lyricsTranslation {
     color: #c6c7d9;
-    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .62));
+    font-size: max(12px, calc(22px * .62));
     line-height: 1.35;
 }
 
@@ -381,8 +392,8 @@ body.lyricOverlay html {
 }
 
 body.lyricOverlay .main {
-    width: 100%;
-    height: 100%;
+    width: var(--lyric-viewport-width, 100vw);
+    height: var(--lyric-viewport-height, 100vh);
     margin: 0;
 }
 
@@ -415,23 +426,23 @@ body.lyricOverlay .volumeControl {
 
 body.lyricOverlay .lyricsPanel {
     position: fixed;
-    left: 50%;
-    right: auto;
-    bottom: 8%;
+    inset: 0;
     display: flex;
-    width: min(var(--lyrics-overlay-width, 92%), 100%);
-    max-width: 100%;
+    width: var(--lyric-viewport-width, 100vw);
+    height: var(--lyric-viewport-height, 100vh);
+    max-width: none;
     min-width: 0;
     min-height: 0;
     margin: 0;
-    padding: 0;
+    padding: clamp(12px, 5vh, 42px) max(12px, calc((100% - var(--lyrics-overlay-width, 92%)) / 2));
     border: 0;
     border-radius: 0;
     background: transparent;
     color: var(--lyrics-color, #fff);
     opacity: var(--lyrics-opacity, 1);
     text-shadow: 0 2px 8px rgb(0 0 0 / .75);
-    transform: translateX(-50%);
+    overflow: hidden;
+    text-align: center;
 }
 
 body.lyricOverlay .lyricsPanel > * {
@@ -454,11 +465,13 @@ body.lyricOverlay .lyricsTranslation {
 }
 
 body.lyricOverlay .lyricsCurrent {
-    font-size: var(--lyrics-font-size, 22px);
+    font-size: clamp(18px, min(var(--lyrics-font-size, 22px), 7vw, 14vh), 64px);
+    line-height: 1.25;
 }
 
 body.lyricOverlay .lyricsTranslation {
-    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .62));
+    font-size: clamp(12px, min(calc(var(--lyrics-font-size, 22px) * .62), 4vw, 8vh), 40px);
+    line-height: 1.25;
 }
 
 body.lyricOverlay .lyricsPrevious,
@@ -469,16 +482,18 @@ body.lyricOverlay .lyricsNext {
 }
 
 body.lyricOverlay .lyricsStackLine {
-    overflow: hidden;
+    overflow: visible;
     width: 100%;
     max-width: 100%;
     min-width: 0;
     color: var(--lyrics-color, #fff);
-    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .72));
+    font-size: clamp(12px, min(calc(var(--lyrics-font-size, 22px) * .72), 4vw, 8vh), 44px);
     line-height: 1.35;
     opacity: .62;
     text-overflow: clip;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 body.lyricOverlay .lyricsPrevious[hidden],

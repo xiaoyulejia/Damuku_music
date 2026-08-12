@@ -1,6 +1,6 @@
 import orderConfiger from "./order-configer.js?v=20260810-41";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260812-18";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-22";
 import lyricService from "../services/lyric-service.js?v=20260812-1";
 
 /**
@@ -21,9 +21,6 @@ class MusicPlayer {
     // 空闲歌单列表 
     idleSongList = [];
 
-    // 歌曲播放时音量淡入，降低卡顿影响
-    playFadeIn = null;
-
     // 切歌锁，防止多次触发 playNext 导致列表错位
     isSwitching = false;
 
@@ -35,6 +32,7 @@ class MusicPlayer {
     errorNextTimer = null;
     overLimitTriggered = false;
     autoSkipCount = 0;
+    audioRecoveryAttempts = 0;
 
     // 当前播放歌曲，用于同步 H5 播放卡片
     currentSong = null;
@@ -67,6 +65,7 @@ class MusicPlayer {
     publisherClaiming = false;
     requestedPublisher = false;
     credentialsPushTimer = null;
+    lastPublisherHeartbeatAt = 0;
     ready = Promise.resolve();
     publisherClaimed = false;
     debug = false;
@@ -84,6 +83,9 @@ class MusicPlayer {
     lyricSongKey = '';
     lyricLines = [];
     currentLyricIndex = -2;
+    lyricMeasurementFrame = 0;
+    lastPublisherHeartbeatAttemptAt = 0;
+    audioPlaybackUnlocked = false;
 
     constructor() {
         this.debug = this.getDebugMode();
@@ -95,6 +97,12 @@ class MusicPlayer {
             this.publisherStartedAt = Date.now();
         }
         this.volumePercent = 50;
+        this.audio.preload = 'auto';
+        this.audio.playbackRate = 1;
+        this.audio.defaultPlaybackRate = 1;
+        if ('preservesPitch' in this.audio) this.audio.preservesPitch = true;
+        if ('mozPreservesPitch' in this.audio) this.audio.mozPreservesPitch = true;
+        if ('webkitPreservesPitch' in this.audio) this.audio.webkitPreservesPitch = true;
         this.applyVolume(this.volumePercent);
         this.ready = this.initStateSync();
         this.addListener();
@@ -104,6 +112,7 @@ class MusicPlayer {
             this.renderLyricsAt(this.getPlaybackPositionMs());
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
         });
+        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
         window.addEventListener('bilibili-ordersong-settings-changed', event => {
             if (!this.isMirrorMode) {
                 // 播放端租约确认前，禁止本地旧配置抢先覆盖服务端房间状态。
@@ -134,6 +143,10 @@ class MusicPlayer {
     getDisplaySetting(key, fallback) {
         const value = window.__displaySettings?.[key];
         return value == null ? fallback : value;
+    }
+
+    isLyricScrollEnabled() {
+        return this.getDisplaySetting('lyricsDisplayMode', 'wrap') === 'scroll';
     }
 
     songKey(song = this.currentSong) {
@@ -177,6 +190,110 @@ class MusicPlayer {
                 : Math.max(0, Math.round((Number(this.currentSong?.duration) || 0) * 1000));
         }
         return Math.max(0, Number(this.remotePlayback?.durationMs) || 0);
+    }
+
+    isPlaybackPaused() {
+        return this.isMirrorMode ? Boolean(this.remotePlayback?.paused) : Boolean(this.audio.paused);
+    }
+
+    getLyricLineWindow(index) {
+        const line = this.lyricLines[index];
+        if (!line) return null;
+        const lineStartMs = Math.max(0, Number(line.timeMs) || 0);
+        const nextStartMs = Number(this.lyricLines[index + 1]?.timeMs);
+        const explicitEndMs = Number(line.endMs);
+        const durationMs = this.getPlaybackDurationMs();
+        const fallbackEndMs = durationMs > lineStartMs
+            ? durationMs
+            : lineStartMs + 8_000;
+        const lineEndMs = Math.max(
+            lineStartMs + 1,
+            Number.isFinite(explicitEndMs) && explicitEndMs > lineStartMs
+                ? explicitEndMs
+                : Number.isFinite(nextStartMs) && nextStartMs > lineStartMs
+                    ? nextStartMs
+                    : fallbackEndMs
+        );
+        const lineDurationMs = lineEndMs - lineStartMs;
+        const preferredStartHoldMs = 400;
+        const preferredEndHoldMs = 250;
+        const preferredHoldMs = preferredStartHoldMs + preferredEndHoldMs;
+        const holdScale = lineDurationMs >= preferredHoldMs + 1
+            ? 1
+            : Math.max(0, (lineDurationMs - 1) / preferredHoldMs);
+        let startHoldMs = preferredStartHoldMs * holdScale;
+        let endHoldMs = preferredEndHoldMs * holdScale;
+        let travelMs = lineDurationMs - startHoldMs - endHoldMs;
+        // 极短时间窗优先保证滚到末尾，必要时取消句首/句尾停留。
+        if (travelMs < 1) {
+            startHoldMs = 0;
+            endHoldMs = 0;
+            travelMs = Math.max(1, lineDurationMs);
+        }
+        return { lineStartMs, lineEndMs, lineDurationMs, startHoldMs, endHoldMs, travelMs };
+    }
+
+    clearLyricMarqueeStyles() {
+        if (this.lyricMeasurementFrame) cancelAnimationFrame(this.lyricMeasurementFrame);
+        this.lyricMeasurementFrame = 0;
+        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(id => {
+            const container = document.getElementById(id);
+            if (!container) return;
+            container.classList.remove('lyricsMarquee');
+            ['--lyrics-marquee-shift', '--lyrics-marquee-duration', '--lyrics-marquee-delay', '--lyrics-marquee-play-state']
+                .forEach(property => container.style.removeProperty(property));
+            container.querySelectorAll('.lyricsStackLine').forEach(line => {
+                line.classList.remove('lyricsMarquee');
+                ['--lyrics-marquee-shift', '--lyrics-marquee-duration', '--lyrics-marquee-delay', '--lyrics-marquee-play-state']
+                    .forEach(property => line.style.removeProperty(property));
+                delete line.__lyricsMarquee;
+            });
+            delete container.__lyricsMarquee;
+        });
+    }
+
+    applyLyricMarqueeProgress(container, positionMs, windowState) {
+        if (!container?.__lyricsMarquee || !windowState) return;
+        const effectiveTime = Number(positionMs || 0) + Number(this.getDisplaySetting('lyricsOffsetMs', 0) || 0);
+        const elapsedMs = effectiveTime - windowState.lineStartMs;
+        const travelStartMs = windowState.startHoldMs;
+        const travelEndMs = windowState.lineDurationMs - windowState.endHoldMs;
+        let travelProgress = 0;
+        if (elapsedMs > travelStartMs && elapsedMs < travelEndMs) {
+            travelProgress = (elapsedMs - travelStartMs) / windowState.travelMs;
+        } else if (elapsedMs >= travelEndMs) {
+            travelProgress = 1;
+        }
+        travelProgress = Math.max(0, Math.min(1, travelProgress));
+        const inTravel = elapsedMs > travelStartMs && elapsedMs < travelEndMs;
+        const playing = !this.isPlaybackPaused();
+        const animationState = inTravel && playing ? 'running' : 'paused';
+        container.style.setProperty('--lyrics-marquee-delay', `${-(travelProgress * windowState.travelMs) / 1000}s`);
+        container.style.setProperty('--lyrics-marquee-play-state', animationState);
+    }
+
+    syncLyricMarqueePosition(positionMs) {
+        ['lyricsCurrent', 'lyricsTranslation'].forEach(id => {
+            const container = document.getElementById(id);
+            if (container?.__lyricsMarquee) {
+                this.applyLyricMarqueeProgress(container, positionMs, container.__lyricsMarquee.windowState);
+            }
+        });
+    }
+
+    setLyricMarqueePlaying(playing) {
+        ['lyricsCurrent', 'lyricsTranslation'].forEach(id => {
+            const container = document.getElementById(id);
+            if (container?.__lyricsMarquee) {
+                const windowState = container.__lyricsMarquee.windowState;
+                const effectiveTime = Number(this.getPlaybackPositionMs() || 0) +
+                    Number(this.getDisplaySetting('lyricsOffsetMs', 0) || 0);
+                const elapsedMs = effectiveTime - windowState.lineStartMs;
+                const inTravel = elapsedMs > windowState.startHoldMs &&
+                    elapsedMs < windowState.lineDurationMs - windowState.endHoldMs;
+                container.style.setProperty('--lyrics-marquee-play-state', playing && inTravel ? 'running' : 'paused');
+            }
+        });
     }
 
     renderPlaybackProgress(positionMs, durationMs, { interactive = true } = {}) {
@@ -238,6 +355,7 @@ class MusicPlayer {
         this.seekPreviewUntil = Date.now() + 2000;
         this.renderPlaybackProgress(target, duration, { interactive: true });
         this.renderLyricsAt(target);
+        this.syncLyricMarqueePosition(target);
         if (this.isMirrorMode) {
             const result = await this.sendCommand('seek', {
                 positionMs: Math.round(target),
@@ -258,6 +376,7 @@ class MusicPlayer {
             this.audio.currentTime = target;
             this.renderPlaybackProgress(target * 1000, duration * 1000, { interactive: true });
             this.renderLyricsAt(target * 1000);
+            this.syncLyricMarqueePosition(target * 1000);
             this.publishState();
             return true;
         } catch (_) {
@@ -286,6 +405,7 @@ class MusicPlayer {
     }
 
     resetLyrics({ loading = false } = {}) {
+        this.clearLyricMarqueeStyles();
         this.lyricLines = [];
         this.currentLyricIndex = -2;
         this.lyricSongKey = loading ? this.songKey() : '';
@@ -293,7 +413,6 @@ class MusicPlayer {
             const element = document.getElementById(id);
             const textElement = element?.querySelector('.lyricsText') || element;
             if (textElement) textElement.textContent = '';
-            element?.classList.remove('lyricsMarquee');
         });
         const translation = document.getElementById('lyricsTranslation');
         if (translation) translation.hidden = true;
@@ -379,40 +498,74 @@ class MusicPlayer {
             textElement.textContent = current?.translation || '';
             translation.hidden = !Boolean(this.getDisplaySetting('lyricsTranslation', true)) || !current?.translation;
         }
-        this.refreshLyricMarquees();
+        this.refreshLyricMarquees(positionMs);
     }
 
-    refreshLyricMarquees() {
+    refreshLyricMarquees(positionMs = this.getPlaybackPositionMs(), scheduleMeasurement = true) {
+        this.clearLyricMarqueeStyles();
+        if (!this.isLyricScrollEnabled()) return;
+        const lineWindow = this.getLyricLineWindow(this.currentLyricIndex);
+        if (!lineWindow) return;
         const update = container => {
             const textElement = container?.querySelector('.lyricsText');
-            if (!container || !textElement) return;
-            container.classList.remove('lyricsMarquee');
-            container.style.removeProperty('--lyrics-marquee-shift');
-            container.style.removeProperty('--lyrics-marquee-duration');
-            if (container.hidden || !textElement.textContent.trim()) return;
-            const overflow = textElement.scrollWidth - container.clientWidth;
-            if (overflow <= 1) return;
+            if (!container || !textElement || container.hidden || !textElement.textContent.trim()) return;
+            // 先清理旧动画，再加类测量，避免同一容器的重复测量重启动画。
             container.classList.add('lyricsMarquee');
-            container.style.setProperty('--lyrics-marquee-shift', `${-overflow}px`);
-            // 以约 85px/s 的速度滚动；长歌词不再被过高的时长上限拖慢。
-            container.style.setProperty('--lyrics-marquee-duration', `${Math.max(5, Math.min(16, overflow / 85 + 1.8))}s`);
+            const overflowPx = Math.max(0, textElement.scrollWidth - container.clientWidth);
+            if (overflowPx <= 1) {
+                container.classList.remove('lyricsMarquee');
+                return;
+            }
+            container.style.setProperty('--lyrics-marquee-shift', `${-overflowPx}px`);
+            container.style.setProperty('--lyrics-marquee-duration', `${lineWindow.travelMs / 1000}s`);
+            container.__lyricsMarquee = { overflowPx, windowState: lineWindow };
+            this.applyLyricMarqueeProgress(container, positionMs, lineWindow);
         };
-        const updateContainer = id => {
-            const container = document.getElementById(id);
-            if (!container) return;
-            const stackLines = [...container.querySelectorAll('.lyricsStackLine')];
-            (stackLines.length ? stackLines : [container]).forEach(update);
-        };
-        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(updateContainer);
-        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => {
-            ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(updateContainer);
-        });
+        ['lyricsCurrent', 'lyricsTranslation'].forEach(id => update(document.getElementById(id)));
+        // 字体/OBS 页面布局可能在本帧结束时才稳定，最多保留一个重测任务。
+        if (scheduleMeasurement && typeof requestAnimationFrame === 'function') {
+            this.lyricMeasurementFrame = requestAnimationFrame(() => {
+                this.lyricMeasurementFrame = 0;
+                if (this.currentLyricIndex !== lyricService.findLineIndex(
+                    this.lyricLines,
+                    Number(this.getPlaybackPositionMs() || 0) + Number(this.getDisplaySetting('lyricsOffsetMs', 0) || 0)
+                )) return;
+                this.refreshLyricMarquees(this.getPlaybackPositionMs(), false);
+            });
+        }
     }
 
     debugLog(label, value) {
         if (!this.debug) return;
         if (typeof value === 'undefined') console.debug(`[MusicPlayer][debug] ${label}`);
         else console.debug(`[MusicPlayer][debug] ${label}`, value);
+    }
+
+    async handleVisibilityChange() {
+        if (document.visibilityState === 'hidden') {
+            // 只降低 UI 刷新频率，不暂停/重播/重建真实音频链路。
+            this.stopProgressAnimation();
+            if (!this.isMirrorMode && this.publisherClaimed) this.publishState();
+            return;
+        }
+
+        this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+        this.renderLyricsAt(this.getPlaybackPositionMs());
+        this.syncLyricMarqueePosition(this.getPlaybackPositionMs());
+        if (this.isMirrorMode) {
+            await this.pullSharedState();
+            return;
+        }
+        if (!this.publisherClaimed) return;
+        const canonical = await this.fetchCanonicalState();
+        const canonicalPublisherId = String(canonical?.publisherId || '');
+        if (canonicalPublisherId && canonicalPublisherId !== this.publisherId) {
+            this.becomeMirrorMode(canonical, 'publisher-locked');
+            return;
+        }
+        // 恢复显示只验证租约并重绘本地媒体位置，不用服务端位置反向 seek。
+        this.publishState();
+        if (!this.audio.paused) this.startProgressAnimation();
     }
 
     describeAudioUrl(url) {
@@ -483,7 +636,7 @@ class MusicPlayer {
                 await this.playCanonicalState(claimResult.state, 'publisher-start');
             }
             this.publishState();
-            this.stateTimer = setInterval(() => this.publishState(), 1000);
+            this.stateTimer = setInterval(() => this.publishState(), 2000);
             this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
         }
         return true;
@@ -564,8 +717,6 @@ class MusicPlayer {
     async tryReclaimPublisher() {
         if (!this.requestedPublisher || !this.isMirrorMode || this.publisherClaiming) return;
         this.publisherClaiming = true;
-        this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-        this.publisherStartedAt = Date.now();
         try {
             const claimResult = await this.claimPublisher();
             if (!claimResult.claimed || claimResult.unavailable) return;
@@ -585,7 +736,7 @@ class MusicPlayer {
                 this.credentialsPollTimer = setInterval(() => this.pullSharedCredentials(), 3000);
             }
             this.publishState();
-            this.stateTimer = setInterval(() => this.publishState(), 1000);
+            this.stateTimer = setInterval(() => this.publishState(), 2000);
             this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
             this.debugLog('已重新抢回 OBS 播放端租约', { publisherId: this.publisherId });
             window.dispatchEvent(new CustomEvent('bilibili-ordersong-publisher-claimed'));
@@ -751,7 +902,8 @@ class MusicPlayer {
             this.updatePlayerState(state?.status || '等待点歌');
             return;
         }
-        const sameSong = this.loadedAudioSongId === this.songKey(song) && Boolean(this.audio.src);
+        const audioSourceFailed = Boolean(this.audio.error) || this.audio.networkState === 3;
+        const sameSong = this.loadedAudioSongId === this.songKey(song) && Boolean(this.audio.src) && !audioSourceFailed;
         if (!sameSong) {
             await this.play(song, state?.currentRequester || '');
             return;
@@ -762,7 +914,8 @@ class MusicPlayer {
     }
 
     publishState() {
-        if (this.isMirrorMode) return;
+        if (this.isMirrorMode || !this.publisherClaimed) return;
+        this.lastPublisherHeartbeatAttemptAt = Date.now();
         const state = {
             queue: this.orderList.map(order => ({
                 orderId: order.orderId,
@@ -829,6 +982,9 @@ class MusicPlayer {
                 reason: result.reason,
                 publisherId: result.data?.publisherId
             });
+            if (response.ok && result.code === 0 && !result.ignored) {
+                this.lastPublisherHeartbeatAt = Number(result.data?.publisherHeartbeatAt) || Date.now();
+            }
             if (result.ignored && result.reason === 'publisher-locked') {
                 this.becomeMirrorMode(result.data, result.reason);
             }
@@ -915,8 +1071,10 @@ class MusicPlayer {
     }
 
     applyVolume(value) {
-        this.volumePercent = Math.max(0, Math.min(100, Number(value) || 0));
-        this.audio.volume = this.volumePercent / 100;
+        const nextVolume = Math.max(0, Math.min(100, Number(value) || 0));
+        this.volumePercent = nextVolume;
+        const targetVolume = nextVolume / 100;
+        if (Math.abs(Number(this.audio.volume) - targetVolume) > 0.0001) this.audio.volume = targetVolume;
         const slider = document.getElementById('volumeSlider');
         const output = document.getElementById('volumeValue');
         if (slider) slider.value = String(this.volumePercent);
@@ -1066,6 +1224,7 @@ class MusicPlayer {
         // 1. 开始播放事件
         this.audio.addEventListener("play", () => {
             this.startProgressAnimation();
+            this.setLyricMarqueePlaying(true);
             this.updatePlayerState("播放中");
             this.publishState();
             this.debugLog('音频 play 事件', {
@@ -1079,6 +1238,7 @@ class MusicPlayer {
         // 2. 暂停播放事件
         this.audio.addEventListener("pause", () => {
             this.stopProgressAnimation();
+            this.setLyricMarqueePlaying(false);
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
             this.renderLyricsAt(this.getPlaybackPositionMs());
             this.updatePlayerState("已暂停");
@@ -1108,12 +1268,17 @@ class MusicPlayer {
         this.audio.addEventListener("seeked", () => {
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
             this.renderLyricsAt(this.getPlaybackPositionMs());
+            this.syncLyricMarqueePosition(this.getPlaybackPositionMs());
             this.publishState();
         });
         // 3. 播放时间更新事件
         this.audio.addEventListener("timeupdate", () => {
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
             this.renderLyricsAt(this.getPlaybackPositionMs());
+            // 音频事件可以继续触发，而页面定时器在 OBS 最小化后可能被节流。
+            if (!this.isMirrorMode && this.publisherClaimed && Date.now() - this.lastPublisherHeartbeatAttemptAt >= 5000) {
+                this.publishState();
+            }
             // 超过歌曲限长则自动播放下一首
             if (orderConfiger.overLimitSkip > 0 &&
                 this.audio.currentTime > orderConfiger.overLimitSkip &&
@@ -1141,17 +1306,34 @@ class MusicPlayer {
                 networkState: this.audio.networkState,
                 readyState: this.audio.readyState
             });
-            this.updatePlayerState("播放错误");
+            const failedSong = this.currentSong;
+            this.invalidateAudioSource();
+            this.updatePlayerState("音频加载失败，正在重试");
             this.stopProgressAnimation();
             this.resetLyrics();
             this.renderPlaybackProgress(0, 0, { interactive: false });
-            publicMethod.pageAlert("播放错误，即将播放下一首...");
+            this.audioRecoveryAttempts += 1;
+            publicMethod.pageAlert("音频加载失败，正在重新获取播放地址...");
             clearTimeout(this.errorNextTimer);
             this.errorNextTimer = setTimeout(() => {
-                // 播放下一首歌曲
+                if (failedSong && this.songKey() === this.songKey(failedSong) && this.audioRecoveryAttempts <= 1) {
+                    this.play(failedSong, this.currentRequester);
+                    return;
+                }
+                this.audioRecoveryAttempts = 0;
                 this.playNext();
             }, 6000);
         });
+    }
+
+    invalidateAudioSource() {
+        this.stopProgressAnimation();
+        this.loadedAudioSongId = '';
+        try {
+            this.audio.pause();
+            this.audio.removeAttribute('src');
+            this.audio.load();
+        } catch (_) { /* 浏览器媒体对象可能正在切换 */ }
     }
 
     // 播放歌曲
@@ -1237,6 +1419,13 @@ class MusicPlayer {
         }
 
         this.audio.src = songurl;
+        this.audio.playbackRate = 1;
+        this.audio.defaultPlaybackRate = 1;
+        if ('preservesPitch' in this.audio) this.audio.preservesPitch = true;
+        if ('mozPreservesPitch' in this.audio) this.audio.mozPreservesPitch = true;
+        if ('webkitPreservesPitch' in this.audio) this.audio.webkitPreservesPitch = true;
+        this.applyVolume(this.volumePercent);
+        this.audioRecoveryAttempts = 0;
         this.autoSkipCount = 0;
         this.loadedAudioSongId = this.songKey(song);
         this.loadLyricsForSong(song);
@@ -1246,27 +1435,6 @@ class MusicPlayer {
             muted: this.audio.muted,
             volume: this.audio.volume
         });
-
-        /*----------------------------音量淡入-------------------------------*/
-        if (this.playFadeIn) {
-            clearInterval(this.playFadeIn);
-            this.playFadeIn = null;
-        }
-        /*
-            此处有两个注意点
-            1. 此处若自增 0.1 会出现精度问题，0.1 + 0.2 不等于 0.3
-            2. setInterval为全局函数，需要用箭头函数来保证this的指向
-        */
-        this.audio.volume = 0;
-        this.playFadeIn = setInterval(() => {
-            const targetVolume = this.volumePercent / 100;
-            this.audio.volume = Math.min(targetVolume, this.audio.volume + 0.1);
-            if (this.audio.volume >= targetVolume) {
-                clearInterval(this.playFadeIn);
-                this.playFadeIn = null;
-            }
-        }, 300);
-        /*----------------------------音量淡入-------------------------------*/
 
         // 播放；如果浏览器拦截有声自动播放，先静音启动，再恢复声音。
         const played = await this.playAudioWithFallback('new-song');
@@ -1298,11 +1466,16 @@ class MusicPlayer {
                 : "当前没有歌曲，请先加载歌单或点歌");
             return;
         }
+        if (this.audio.error || this.audio.networkState === 3) {
+            await this.play(this.currentSong, this.currentRequester);
+            return;
+        }
         try {
             // 音频已经以静音状态运行时，远程控制只需要解除静音，
             // 不要再次调用 play()，否则会重新触发自动播放拦截。
             if (!this.audio.paused && this.audio.muted) {
                 this.audio.muted = false;
+                this.audioPlaybackUnlocked = true;
                 this.audioUnlockRequired = false;
                 this.debugLog('已解除音频静音', { reason: 'unlock', remoteSafe: true });
                 this.updatePlayerState('播放中');
@@ -1334,6 +1507,14 @@ class MusicPlayer {
         }
     }
 
+    pausePlayback() {
+        if (this.isMirrorMode) {
+            this.sendCommand('pause');
+            return;
+        }
+        if (!this.audio.paused) this.audio.pause();
+    }
+
     async playAudioWithFallback(reason = 'unknown') {
         this.debugLog('尝试播放音频', {
             reason,
@@ -1345,34 +1526,64 @@ class MusicPlayer {
             networkState: this.audio.networkState
         });
 
-        // 先以静音状态启动。浏览器通常允许静音自动播放；启动成功后
-        // 再解除静音，控制页的远程指令也不需要把用户手势跨页面传递。
-        const previousMuted = this.audio.muted;
-        this.audio.muted = true;
+        // 已经成功播放过后，切歌/恢复直接走有声播放，避免每次切歌都触发
+        // CEF/OBS 音频回调的 muted -> unmuted 状态切换。
+        if (this.audioPlaybackUnlocked) {
+            try {
+                await this.audio.play();
+                this.audioUnlockRequired = false;
+                this.updateAudioUnlockPrompt();
+                this.publishState();
+                this.debugLog('有声播放成功', { reason, mutedBootstrap: false, unlocked: true });
+                return true;
+            } catch (error) {
+                // 页面重新加载或宿主策略变化后，允许本次重新走一次解锁流程。
+                this.audioPlaybackUnlocked = false;
+                this.debugLog('已解锁播放失败，重新检查自动播放策略', {
+                    reason,
+                    name: error.name,
+                    message: error.message
+                });
+            }
+        }
+
         try {
             await this.audio.play();
-            this.audio.muted = false;
+            this.audioPlaybackUnlocked = true;
             this.audioUnlockRequired = false;
             this.updateAudioUnlockPrompt();
             this.publishState();
-            this.debugLog('静音启动成功并已恢复声音', { reason, mutedBootstrap: true });
+            this.debugLog('有声播放成功', { reason, mutedBootstrap: false, unlocked: true });
             return true;
         } catch (error) {
-            this.audio.muted = previousMuted;
-            this.debugLog('静音启动失败，尝试直接有声播放', {
+            const isAutoplayBlocked = error?.name === 'NotAllowedError' || error?.name === 'SecurityError';
+            if (!isAutoplayBlocked) {
+                this.audioUnlockRequired = false;
+                this.updateAudioUnlockPrompt();
+                this.debugLog('有声播放失败', {
+                    reason,
+                    name: error.name,
+                    message: error.message
+                });
+                return false;
+            }
+            this.debugLog('有声自动播放被阻止，首次使用静音启动', {
                 reason,
                 name: error.name,
                 message: error.message
             });
         }
 
+        const previousMuted = this.audio.muted;
+        this.audio.muted = true;
         try {
             await this.audio.play();
-            this.audio.muted = false;
+            this.audioPlaybackUnlocked = true;
+            if (!previousMuted) this.audio.muted = false;
             this.audioUnlockRequired = false;
             this.updateAudioUnlockPrompt();
             this.publishState();
-            this.debugLog('有声播放成功', { reason, mutedBootstrap: false });
+            this.debugLog('静音启动成功并已恢复声音', { reason, mutedBootstrap: true, unlocked: true });
             return true;
         } catch (error) {
             this.audio.muted = previousMuted;

@@ -1,6 +1,6 @@
-import musicPlayer from "./music-player.js?v=20260812-4";
+import musicPlayer from "./music-player.js?v=20260812-23";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260812-18";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-22";
 import danmuServer from "../services/danmuServers/danmu-server.js?v=20260812-1";
 
 /* 在此处启动弹幕服务 */
@@ -103,13 +103,13 @@ class DanmuConfiger {
             }
         } else if (danmuMsg == "暂停") {
             if (userDanmu.uid == this.adminId) {
-                musicPlayer.audio.pause();
+                musicPlayer.pausePlayback();
             } else {
                 publicMethod.pageAlert("您没有改权限进行该操作~");
             }
         } else if (danmuMsg == "播放") {
             if (userDanmu.uid == this.adminId) {
-                musicPlayer.audio.play();
+                musicPlayer.unlockPlayback();
             } else {
                 publicMethod.pageAlert("您没有改权限进行该操作~");
             }

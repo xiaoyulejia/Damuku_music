@@ -33,7 +33,9 @@ const sharedOrderCommands = new Map();
 const sharedRuntimeCredentials = new Map();
 const localStore = new LocalStore(path.resolve(__dirname, '../..'));
 let sharedOrderCommandSeq = 0;
-const SYNC_PUBLISHER_LEASE_MS = 5000;
+// OBS 最小化后，内置 Chromium 可能把页面定时器延迟数秒甚至更久。
+// 5 秒租约会把仍在播放的 OBS 误判为离线，导致播放端被重新接管。
+const SYNC_PUBLISHER_LEASE_MS = 60 * 1000;
 const sharedSyncDir = localStore.cacheDir;
 fs.mkdirSync(sharedSyncDir, { recursive: true });
 const MAX_COMMAND_LOG_ENTRIES = 1000;
@@ -524,6 +526,37 @@ function applyRoomCommand(roomId, command) {
             queueChanged = true;
             break;
         }
+        case 'removeOrder': {
+            const conflict = queueConflict(state, value, { requireQueueRevision: true });
+            if (conflict) {
+                result = { accepted: false, command: command.command, ...conflict };
+                break;
+            }
+            const orderId = String(value?.orderId || '').trim();
+            if (!orderId || orderId.length > 200) {
+                result = { accepted: false, command: command.command, reason: 'orderId无效', httpStatus: 400 };
+                break;
+            }
+            const targetIndex = state.queue.findIndex(item => String(item.orderId) === orderId);
+            if (targetIndex < 0) {
+                result = { accepted: false, command: command.command, reason: 'order-not-found', httpStatus: 409 };
+                break;
+            }
+            if (targetIndex === 0 || String(state.queue[targetIndex]?.orderId) === currentOrderId(state)) {
+                result = { accepted: false, command: command.command, reason: 'current-song-not-removable', httpStatus: 400 };
+                break;
+            }
+            const [removed] = state.queue.splice(targetIndex, 1);
+            result = {
+                accepted: true,
+                command: command.command,
+                removed: true,
+                orderId,
+                songName: removed?.song?.sname || ''
+            };
+            queueChanged = true;
+            break;
+        }
         case 'play':
             if (!state.currentSong) {
                 if (!state.queue.length) {
@@ -828,16 +861,18 @@ router.post('/live/sync-command', (req, res) => {
     }
     const allowedCommands = new Set([
         'loadSongList', 'addOrder', 'next', 'play', 'volume', 'settings',
-        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue', 'seek'
+        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue', 'removeOrder', 'seek'
     ]);
     if (!allowedCommands.has(String(command.command || ''))) {
         return res.status(400).json({ code: -1, message: '不支持的控制指令' });
     }
-    if (['promoteNext', 'reorderQueue'].includes(command.command)) {
+    if (['promoteNext', 'reorderQueue', 'removeOrder'].includes(command.command)) {
         const value = command.value;
         const allowedFields = command.command === 'promoteNext'
             ? ['orderId', 'expectedRevision', 'expectedQueueRevision', 'expectedCurrentOrderId']
-            : ['expectedQueueRevision', 'expectedCurrentOrderId', 'pendingOrderIds'];
+            : command.command === 'removeOrder'
+                ? ['orderId', 'expectedQueueRevision', 'expectedCurrentOrderId']
+                : ['expectedQueueRevision', 'expectedCurrentOrderId', 'pendingOrderIds'];
         if (!value || typeof value !== 'object' || Array.isArray(value) ||
             Object.keys(value).some(key => !allowedFields.includes(key))) {
             return res.status(400).json({ code: -1, message: '队列控制参数无效' });
@@ -873,16 +908,17 @@ router.post('/live/sync-command', (req, res) => {
                 listId: nextCommand.value?.listId || ''
             }
             : nextCommand.command === 'volume' ? nextCommand.value
-                : ['promoteNext', 'reorderQueue'].includes(nextCommand.command)
-                    ? {
-                        orderId: nextCommand.value?.orderId || '',
+                    : ['promoteNext', 'reorderQueue', 'removeOrder'].includes(nextCommand.command)
+                        ? {
+                            orderId: nextCommand.value?.orderId || '',
                         expectedRevision: nextCommand.value?.expectedRevision,
                         expectedQueueRevision: nextCommand.value?.expectedQueueRevision,
                         expectedCurrentOrderId: nextCommand.value?.expectedCurrentOrderId || '',
-                        pendingOrderIds: Array.isArray(nextCommand.value?.pendingOrderIds)
-                            ? nextCommand.value.pendingOrderIds.slice(0, MAX_QUEUE_REORDER_ITEMS)
-                            : undefined
-                    }
+                            pendingOrderIds: Array.isArray(nextCommand.value?.pendingOrderIds)
+                                ? nextCommand.value.pendingOrderIds.slice(0, MAX_QUEUE_REORDER_ITEMS)
+                                : undefined,
+                            removeOrder: nextCommand.command === 'removeOrder'
+                        }
                     : nextCommand.command === 'seek' ? {
                         positionMs: nextCommand.value?.positionMs,
                         expectedSongKey: nextCommand.value?.expectedSongKey || ''
