@@ -32,6 +32,38 @@ body, html{
 
 .backendOfflineOverlay[hidden] { display: none; }
 
+.versionMismatchOverlay { z-index: 1100; }
+
+.versionMismatchCard { border-color: rgba(148, 137, 255, .48); }
+
+.versionMismatchCard p { margin-bottom: 12px; }
+
+.versionMismatchDetails {
+    display: grid;
+    gap: 4px;
+    margin: 0 0 18px;
+    color: #aeb1cc;
+    font-size: 11px;
+    text-align: left;
+}
+
+.versionMismatchDetails code {
+    color: #e8e6ff;
+    font-family: Consolas, monospace;
+}
+
+.versionMismatchActions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.versionMismatchActions button:last-child {
+    color: #d8d7ff;
+    background: rgba(255, 255, 255, .1);
+}
+
 .backendOfflineCard {
     width: min(420px, 100%);
     padding: 26px 24px 22px;
@@ -227,8 +259,32 @@ h2 { font-size: 16px; }
 .lyricsStatus {
     overflow: hidden;
     max-width: 100%;
-    text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.lyricsText {
+    display: inline-block;
+    min-width: 100%;
+    white-space: nowrap;
+}
+
+.lyricsLine,
+.lyricsTranslation {
+    text-overflow: clip;
+}
+
+.lyricsMarquee {
+    text-align: left;
+}
+
+.lyricsMarquee .lyricsText {
+    min-width: max-content;
+    animation: lyricsMarquee var(--lyrics-marquee-duration, 12s) ease-in-out infinite alternate;
+}
+
+@keyframes lyricsMarquee {
+    0%, 8% { transform: translateX(0); }
+    92%, 100% { transform: translateX(var(--lyrics-marquee-shift, 0px)); }
 }
 
 .lyricsPrevious,
@@ -317,8 +373,107 @@ body.overlayLight .progressTime { color: #777b9a; }
 body.overlayLight .lyricsTranslation { color: #686c88; }
 body.overlayLight .progressTrack::before { background: rgba(64, 68, 103, .16); }
 
+/* lyric=true：透明歌词专用页，适合作为 OBS 浏览器源叠加。 */
+body.lyricOverlay,
+body.lyricOverlay html {
+    background: transparent;
+}
+
+body.lyricOverlay .main {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+}
+
+body.lyricOverlay .queueCard,
+body.lyricOverlay .setting,
+body.lyricOverlay .alertBox,
+body.lyricOverlay #audioUnlockPrompt,
+body.lyricOverlay #backendOfflineOverlay {
+    display: none !important;
+}
+
+body.lyricOverlay .playerCard {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+}
+
+body.lyricOverlay .cardTitle,
+body.lyricOverlay .nowPlaying,
+body.lyricOverlay .playbackProgress,
+body.lyricOverlay .playerActions,
+body.lyricOverlay .volumeControl {
+    display: none !important;
+}
+
+body.lyricOverlay .lyricsPanel {
+    position: fixed;
+    inset: auto 4% 8%;
+    display: flex;
+    min-height: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--lyrics-color, #fff);
+    opacity: var(--lyrics-opacity, 1);
+    text-shadow: 0 2px 8px rgb(0 0 0 / .75);
+}
+
+body.lyricOverlay .lyricsPanel[hidden] { display: none; }
+
+body.lyricOverlay .lyricsPrevious,
+body.lyricOverlay .lyricsNext,
+body.lyricOverlay .lyricsStatus {
+    display: none;
+}
+
+body.lyricOverlay .lyricsCurrent,
+body.lyricOverlay .lyricsTranslation {
+    color: var(--lyrics-color, #fff);
+}
+
+body.lyricOverlay .lyricsCurrent {
+    font-size: var(--lyrics-font-size, 22px);
+}
+
+body.lyricOverlay .lyricsTranslation {
+    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .62));
+}
+
+body.lyricOverlay .lyricsPrevious,
+body.lyricOverlay .lyricsNext {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+body.lyricOverlay .lyricsStackLine {
+    overflow: hidden;
+    max-width: 100%;
+    color: var(--lyrics-color, #fff);
+    font-size: max(12px, calc(var(--lyrics-font-size, 22px) * .72));
+    line-height: 1.35;
+    opacity: .62;
+    text-overflow: clip;
+    white-space: nowrap;
+}
+
+body.lyricOverlay .lyricsPrevious[hidden],
+body.lyricOverlay .lyricsNext[hidden] {
+    display: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
-    .progressPlayed { transition: none; }
+    .progressPlayed,
+    .lyricsMarquee .lyricsText { transition: none; animation: none; }
 }
 
 .nowLabel,

@@ -12,9 +12,9 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260812-6"></script>
+    <script type="module" src="./main.js?v=20260812-16"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-1">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-16">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
@@ -29,6 +29,21 @@
             <h2 id="backendOfflineTitle">正在检查后端服务</h2>
             <p id="backendOfflineMessage">请稍候，正在确认点歌台服务是否运行。</p>
             <button id="backendRetryBtn" type="button">重新检查</button>
+        </div>
+    </div>
+    <div id="versionMismatchOverlay" class="backendOfflineOverlay versionMismatchOverlay" role="alertdialog" aria-live="assertive" hidden>
+        <div class="backendOfflineCard versionMismatchCard">
+            <div class="backendOfflineIcon">↻</div>
+            <h2 id="versionMismatchTitle">页面版本需要更新</h2>
+            <p id="versionMismatchMessage">当前页面加载的 JavaScript 与后端版本不一致，请刷新页面。</p>
+            <div class="versionMismatchDetails">
+                <span>页面：<code id="frontendBuildIdText">未知</code></span>
+                <span>后端：<code id="backendBuildIdText">未知</code></span>
+            </div>
+            <div class="versionMismatchActions">
+                <button id="clearCacheRefreshBtn" type="button">清空缓存并刷新</button>
+                <button id="versionRefreshBtn" type="button">直接刷新</button>
+            </div>
         </div>
     </div>
     <div id="audioUnlockPrompt" class="audioUnlockPrompt" hidden>
@@ -58,10 +73,10 @@
                 </div>
             </div>
             <section id="lyricsPanel" class="lyricsPanel" aria-live="off" hidden>
-                <div id="lyricsPrevious" class="lyricsLine lyricsPrevious"></div>
-                <div id="lyricsCurrent" class="lyricsLine lyricsCurrent"></div>
-                <div id="lyricsTranslation" class="lyricsTranslation" hidden></div>
-                <div id="lyricsNext" class="lyricsLine lyricsNext"></div>
+                <div id="lyricsPrevious" class="lyricsLine lyricsPrevious"><span class="lyricsText"></span></div>
+                <div id="lyricsCurrent" class="lyricsLine lyricsCurrent"><span class="lyricsText"></span></div>
+                <div id="lyricsTranslation" class="lyricsTranslation" hidden><span class="lyricsText"></span></div>
+                <div id="lyricsNext" class="lyricsLine lyricsNext"><span class="lyricsText"></span></div>
                 <div id="lyricsStatus" class="lyricsStatus" hidden></div>
             </section>
             <div id="playbackProgress" class="playbackProgress">
@@ -293,6 +308,28 @@
                                 <td>歌词字号</td>
                                 <td><input id="lyricsFontSize" type="number" min="12" max="64" step="1"></td>
                                 <td>像素</td>
+                            </tr>
+                            <tr>
+                                <td>歌词颜色</td>
+                                <td><input id="lyricsColor" type="color" value="#ffffff"></td>
+                                <td>歌词面板和歌词专用页</td>
+                            </tr>
+                            <tr>
+                                <td>歌词透明度</td>
+                                <td><input id="lyricsOpacity" type="range" min="10" max="100" step="1"></td>
+                                <td><output id="lyricsOpacityValue"></output></td>
+                            </tr>
+                            <tr>
+                                <td>歌词专用页行数</td>
+                                <td>
+                                    <select id="lyricsOverlayLines">
+                                        <option value="0">只显示当前歌词</option>
+                                        <option value="1">前后各 1 行</option>
+                                        <option value="2">前后各 2 行</option>
+                                        <option value="3">前后各 3 行</option>
+                                    </select>
+                                </td>
+                                <td>仅影响 lyric=true 页面</td>
                             </tr>
                             <tr>
                                 <td>允许拖动进度</td>

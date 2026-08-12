@@ -26,6 +26,9 @@ const DEFAULT_SETTINGS = {
         lyricsTranslation: true,
         lyricsOffsetMs: 0,
         lyricsFontSize: 22,
+        lyricsColor: '#ffffff',
+        lyricsOpacity: 100,
+        lyricsOverlayLines: 1,
         progressSeekEnabled: true,
         customOverlayCss: ''
     },
@@ -72,6 +75,9 @@ function mergeSettings(input = {}) {
     }
     result.display.lyricsOffsetMs = numeric(display.lyricsOffsetMs, 0, -5000, 5000);
     result.display.lyricsFontSize = numeric(display.lyricsFontSize, 22, 12, 64);
+    result.display.lyricsColor = /^#[0-9a-f]{6}$/i.test(String(display.lyricsColor || '')) ? String(display.lyricsColor) : '#ffffff';
+    result.display.lyricsOpacity = numeric(display.lyricsOpacity, 100, 10, 100);
+    result.display.lyricsOverlayLines = numeric(display.lyricsOverlayLines, 1, 0, 3);
     result.display.customOverlayCss = typeof display.customOverlayCss === 'string' ? display.customOverlayCss.slice(0, 20000) : '';
     result.login = input.login && typeof input.login === 'object'
         ? {

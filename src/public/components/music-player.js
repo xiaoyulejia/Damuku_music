@@ -1,6 +1,6 @@
 import orderConfiger from "./order-configer.js?v=20260810-41";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260812-8";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-16";
 import lyricService from "../services/lyric-service.js?v=20260812-1";
 
 /**
@@ -100,6 +100,7 @@ class MusicPlayer {
         this.addListener();
         window.addEventListener('bilibili-display-settings-changed', () => {
             document.documentElement.style.setProperty('--lyrics-font-size', `${this.getDisplaySetting('lyricsFontSize', 22)}px`);
+            this.currentLyricIndex = -2;
             this.renderLyricsAt(this.getPlaybackPositionMs());
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
         });
@@ -290,7 +291,9 @@ class MusicPlayer {
         this.lyricSongKey = loading ? this.songKey() : '';
         ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(id => {
             const element = document.getElementById(id);
-            if (element) element.textContent = '';
+            const textElement = element?.querySelector('.lyricsText') || element;
+            if (textElement) textElement.textContent = '';
+            element?.classList.remove('lyricsMarquee');
         });
         const translation = document.getElementById('lyricsTranslation');
         if (translation) translation.hidden = true;
@@ -330,18 +333,66 @@ class MusicPlayer {
         const previous = this.lyricLines[index - 1];
         const current = this.lyricLines[index];
         const next = this.lyricLines[index + 1];
+        const overlayLineCount = Math.max(0, Math.min(3, Math.trunc(Number(this.getDisplaySetting('lyricsOverlayLines', 1)) || 0)));
         const setText = (id, value) => {
             const element = document.getElementById(id);
-            if (element) element.textContent = value || '';
+            const textElement = element?.querySelector('.lyricsText') || element;
+            if (textElement) textElement.textContent = value || '';
         };
-        setText('lyricsPrevious', previous?.text);
+        const renderStack = (id, items) => {
+            const element = document.getElementById(id);
+            if (!element) return;
+            const values = items.filter(Boolean);
+            element.replaceChildren();
+            values.forEach(item => {
+                const line = document.createElement('div');
+                line.className = 'lyricsStackLine';
+                line.textContent = item.text || '';
+                element.appendChild(line);
+            });
+            element.hidden = values.length === 0;
+        };
+        if (this.isLyricOverlay()) {
+            renderStack('lyricsPrevious', this.lyricLines.slice(Math.max(0, index - overlayLineCount), index));
+            renderStack('lyricsNext', this.lyricLines.slice(index + 1, index + 1 + overlayLineCount));
+        } else {
+            const previousElement = document.getElementById('lyricsPrevious');
+            const nextElement = document.getElementById('lyricsNext');
+            if (previousElement) previousElement.hidden = false;
+            if (nextElement) nextElement.hidden = false;
+            setText('lyricsPrevious', previous?.text);
+            setText('lyricsNext', next?.text);
+        }
         setText('lyricsCurrent', current?.text);
-        setText('lyricsNext', next?.text);
         const translation = document.getElementById('lyricsTranslation');
         if (translation) {
-            translation.textContent = current?.translation || '';
+            const textElement = translation.querySelector('.lyricsText') || translation;
+            textElement.textContent = current?.translation || '';
             translation.hidden = !Boolean(this.getDisplaySetting('lyricsTranslation', true)) || !current?.translation;
         }
+        this.refreshLyricMarquees();
+    }
+
+    refreshLyricMarquees() {
+        const update = id => {
+            const container = document.getElementById(id);
+            const textElement = container?.querySelector('.lyricsText');
+            if (!container || !textElement) return;
+            container.classList.remove('lyricsMarquee');
+            container.style.removeProperty('--lyrics-marquee-shift');
+            container.style.removeProperty('--lyrics-marquee-duration');
+            if (container.hidden || !textElement.textContent.trim()) return;
+            const overflow = textElement.scrollWidth - container.clientWidth;
+            if (overflow <= 1) return;
+            container.classList.add('lyricsMarquee');
+            container.style.setProperty('--lyrics-marquee-shift', `${-overflow}px`);
+            // 以约 85px/s 的速度滚动；长歌词不再被过高的时长上限拖慢。
+            container.style.setProperty('--lyrics-marquee-duration', `${Math.max(5, Math.min(16, overflow / 85 + 1.8))}s`);
+        };
+        ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(update);
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => {
+            ['lyricsPrevious', 'lyricsCurrent', 'lyricsTranslation', 'lyricsNext'].forEach(update);
+        });
     }
 
     debugLog(label, value) {
@@ -365,10 +416,16 @@ class MusicPlayer {
         return (new URLSearchParams(query).get('source') || '').toLowerCase();
     }
 
+    isLyricOverlay() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        return ['1', 'true', 'yes', 'on'].includes((new URLSearchParams(query).get('lyric') || '').toLowerCase());
+    }
+
     getPageLiveMode() {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         const params = new URLSearchParams(query);
         if (params.get('settings') === '1') return false;
+        if (['1', 'true', 'yes', 'on'].includes((params.get('lyric') || '').toLowerCase())) return false;
         if (['monitor', 'control', 'preview'].includes(this.getPageRole())) return false;
         return !['0', 'false', 'no', 'off'].includes((params.get('livemode') || 'true').toLowerCase());
     }
