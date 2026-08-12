@@ -12,7 +12,7 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260812-1"></script>
+    <script type="module" src="./main.js?v=20260812-2"></script>
     <!-- 总体样式文件 -->
     <link rel="stylesheet" href="./styles/main-page.css?v=20260810-6">
     <!-- 点歌面板样式 -->
@@ -98,6 +98,7 @@
                 <button class="setting_btn">点歌设置</button>
                 <button class="setting_btn">弹幕设置</button>
                 <button class="setting_btn">显示设置</button>
+                <button class="setting_btn">队列管理</button>
                 <button class="setting_btn">关于</button>
                 <button id="upBtn">↑</button>
             </div>
@@ -304,6 +305,26 @@
                             </tr>
                         </tbody>
                     </table>
+
+                    <!-- 队列管理：仅设置/控制页面渲染，OBS 页面不包含此入口 -->
+                    <section class="queueManager">
+                        <div class="queueManagerHeader">
+                            <span class="eyebrow">QUEUE CONTROL</span>
+                            <h2>队列管理</h2>
+                            <p class="setting_tip">当前歌曲不会被打断；待播歌曲可拖动排序或设为下一首。</p>
+                        </div>
+                        <article class="queueCurrent" data-locked="true">
+                            <span class="queuePosition">正在播放</span>
+                            <strong id="queueCurrentSong">暂无歌曲</strong>
+                        </article>
+                        <ol id="sortableQueue" class="sortableQueue"></ol>
+                        <div class="queueManagerActions">
+                            <button id="saveQueueOrder" type="button" disabled>保存顺序</button>
+                            <button id="cancelQueueOrder" type="button" disabled>撤销修改</button>
+                            <button id="refreshQueue" type="button">刷新队列</button>
+                        </div>
+                        <p id="queueManagerStatus" class="queueManagerStatus" role="status" aria-live="polite"></p>
+                    </section>
 
                     <!-- 关于 -->
                     <div class="setting_about_page">

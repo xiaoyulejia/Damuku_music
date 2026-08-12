@@ -51,6 +51,7 @@ class MusicPlayer {
     statePulling = false;
     statePushQueue = Promise.resolve();
     lastSharedRevision = 0;
+    lastQueueRevision = 0;
     commandPulling = false;
     lastSharedStateAt = 0;
     commandPollTimer = null;
@@ -80,7 +81,7 @@ class MusicPlayer {
             this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
             this.publisherStartedAt = Date.now();
         }
-        this.volumePercent = Number(localStorage.getItem('playerVolume') || 50);
+        this.volumePercent = 50;
         this.applyVolume(this.volumePercent);
         this.ready = this.initStateSync();
         this.addListener();
@@ -319,6 +320,21 @@ class MusicPlayer {
         }
     }
 
+    async fetchCanonicalState() {
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return null;
+        try {
+            const response = await fetch(`${apiBase}/live/sync-state?room_id=${encodeURIComponent(roomId)}`, {
+                cache: 'no-store'
+            });
+            const result = await response.json();
+            return result.code === 0 ? result.data || null : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
     async pushSharedCredentials() {
         const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
@@ -369,7 +385,7 @@ class MusicPlayer {
         }
     }
 
-    handleCommand(message) {
+    async handleCommand(message) {
         if (!message || (message.id && this.handledCommandIds.has(message.id))) return;
         this.debugLog('OBS 收到控制指令', {
             id: message.id,
@@ -384,14 +400,19 @@ class MusicPlayer {
                 this.handledCommandIds.delete(this.handledCommandIds.values().next().value);
             }
         }
-        if (message.state) this.applySharedState(message.state);
+        let canonicalState = message.state || null;
+        if (!canonicalState || (message.stateRevision &&
+            Number(canonicalState.stateRevision || 0) < Number(message.stateRevision))) {
+            canonicalState = await this.fetchCanonicalState();
+        }
+        if (canonicalState) this.applySharedState(canonicalState);
         if (this.isMirrorMode) return;
         if (['next', 'addOrder', 'loadSongList', 'play'].includes(message.command)) {
-            this.playCanonicalState(message.state, message.command);
+            this.playCanonicalState(canonicalState, message.command);
         }
         if (message.command === 'toggle') {
-            if (!this.audio.src && message.state?.currentSong) {
-                this.playCanonicalState(message.state, 'toggle');
+            if (!this.audio.src && canonicalState?.currentSong) {
+                this.playCanonicalState(canonicalState, 'toggle');
             } else if (this.audio.paused) {
                 this.unlockPlayback();
             } else {
@@ -399,7 +420,7 @@ class MusicPlayer {
             }
         }
         if (message.command === 'pause') this.audio.pause();
-        if (message.command === 'volume') this.applyVolume(message.state?.volume ?? message.value);
+        if (message.command === 'volume') this.applyVolume(canonicalState?.volume ?? message.value);
         if (message.command === 'unlockAudio') this.unlockPlayback();
         if (message.command === 'settings' && message.value) {
             window.__lastSharedSettings = message.value;
@@ -436,23 +457,30 @@ class MusicPlayer {
         if (this.isMirrorMode) return;
         const state = {
             queue: this.orderList.map(order => ({
+                orderId: order.orderId,
                 uid: order.uid,
                 uname: order.uname,
-                song: order.song
+                song: order.song,
+                requestedAt: order.requestedAt,
+                source: order.source
             })),
             currentSong: this.currentSong,
             currentRequester: this.currentRequester,
             status: this.playerState || '等待播放',
             volume: this.volumePercent,
-            songListId: window.__loginSettingsState?.songListId || localStorage.getItem('songListId') || '',
+            songListId: window.__sharedSongListId || window.__loginSettingsState?.songListId || '',
             idleSongList: this.idleSongList.map(order => ({
+                orderId: order.orderId,
                 uid: 0,
                 uname: '空闲歌单',
-                song: order.song || order
+                song: order.song || order,
+                requestedAt: order.requestedAt,
+                source: 'idle'
             })),
             idleIndex: this.idleIndex,
             idleSongCount: this.idleSongList.length,
             audioUnlockRequired: this.audioUnlockRequired,
+            queueRevision: this.lastQueueRevision,
             settings: {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
                 login: window.__loginSettingsState || window.__lastSharedSettings?.login || null
@@ -551,7 +579,7 @@ class MusicPlayer {
             const result = await response.json();
             for (const command of result.data || []) {
                 this.lastCommandId = Math.max(this.lastCommandId, Number(command.sequence) || 0);
-                this.handleCommand(command);
+                await this.handleCommand(command);
             }
         } catch (_) { }
         finally {
@@ -562,7 +590,6 @@ class MusicPlayer {
     setVolume(value) {
         const volume = Math.max(0, Math.min(100, Number(value) || 0));
         this.volumePercent = volume;
-        localStorage.setItem('playerVolume', String(volume));
         this.applyVolume(volume);
         if (this.isMirrorMode) this.sendCommand('volume', volume);
         else this.publishState();
@@ -602,6 +629,7 @@ class MusicPlayer {
         if (state.stateRevision && state.stateRevision < this.lastSharedRevision) return;
         if (state.updatedAt && state.updatedAt < this.lastSharedStateAt) return;
         if (state.stateRevision) this.lastSharedRevision = state.stateRevision;
+        if (state.queueRevision != null) this.lastQueueRevision = Number(state.queueRevision) || 0;
         this.lastSharedStateAt = state.updatedAt || Date.now();
         this.orderList = Array.isArray(state.queue)
             ? state.queue.map(order => this.normalizeQueueOrder(order)).filter(Boolean)
@@ -638,6 +666,7 @@ class MusicPlayer {
         this.renderQueue();
         this.updateNowPlaying(this.currentSong, this.currentRequester);
         this.updatePlayerState(state.status || '等待 OBS 播放');
+        window.dispatchEvent(new CustomEvent('damuku-room-state', { detail: state }));
     }
 
     getQueueDisplayList() {
@@ -669,6 +698,7 @@ class MusicPlayer {
         const song = order.song || order;
         if (!song || song.sid == null) return null;
         return {
+            orderId: String(order.orderId || ''),
             uid: Number(order.uid) || 0,
             uname: String(order.uname || (Number(order.uid) === 0 ? '空闲歌单' : '')),
             song

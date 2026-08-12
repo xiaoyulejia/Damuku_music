@@ -9,8 +9,20 @@ const app = express();
 const { attachLiveProxy } = require('./src/services/bili-live-ws');
 
 // 解析 JSON 和 URL-encoded 请求体
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// JSON 请求体解析失败（尤其是大歌单超过上限）时始终返回约定格式，
+// 不把 Express 默认 HTML 错误页暴露给前端。
+app.use((error, req, res, next) => {
+    if (error?.type === 'entity.too.large' || error?.status === 413) {
+        return res.status(413).json({ code: -1, message: '歌单请求过大，最多支持约 5000 首歌曲' });
+    }
+    if (error instanceof SyntaxError && error.status === 400 && error.body) {
+        return res.status(400).json({ code: -1, message: '请求 JSON 格式无效' });
+    }
+    return next(error);
+});
 
 console.log("===============正在启动服务器...=============");
 const runtime = loadRuntimeConfig(__dirname);

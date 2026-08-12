@@ -1,14 +1,5 @@
 import publicMethod from "../utils/common.js?v=20260810-41";
 
-function readArray(key) {
-    try {
-        const value = JSON.parse(localStorage.getItem(key) || '[]');
-        return Array.isArray(value) ? value : [];
-    } catch (_) {
-        return [];
-    }
-}
-
 function isMirrorPage() {
     const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
     const params = new URLSearchParams(query);
@@ -25,35 +16,35 @@ function isMirrorPage() {
 class OrderConfiger {
 
     // 用户点歌数量限制
-    userMaxOrder = parseInt(localStorage.getItem("userMaxOrder")) || 3;
+    userMaxOrder = 3;
     elem_userMaxOrder = document.getElementById('userMaxOrder');
 
     // 全局最大点歌数限制
-    globalMaxOrder = parseInt(localStorage.getItem("globalMaxOrder")) || 15;
+    globalMaxOrder = 15;
     elem_globalMaxOrder = document.getElementById('globalMaxOrder');
 
     // 限制点歌歌曲的时长(单位秒), 超过则无法点上
-    orderMaxDuration = parseInt(localStorage.getItem("orderMaxDuration")) || 0;
+    orderMaxDuration = 0;
     elem_orderMaxDuration = document.getElementById('orderMaxDuration');
 
     // 限制歌曲播放的时长(单位秒)，超过则自动播放下一首歌曲
-    overLimitSkip = parseInt(localStorage.getItem("overLimitSkip")) || 0;
+    overLimitSkip = 0;
     elem_overLimitSkip = document.getElementById('overLimitSkip');
 
     // 历史点歌用户
-    userHistory = readArray("userHistory");
+    userHistory = [];
     elem_userHistory = document.getElementById("userHistory");
 
     // 历史点歌歌曲
-    songHistory = readArray("songHistory");
+    songHistory = [];
     elem_songHistory = document.getElementById("songHistory");
 
     // 用户黑名单
-    userBlackList = readArray("userBlackList");
+    userBlackList = [];
     elem_userBlackList = document.getElementById("userBlackList");
 
     // 歌曲黑名单
-    songBlackList = readArray("songBlackList");
+    songBlackList = [];
     elem_songBlackList = document.getElementById("songBlackList");
 
     // 构造函数
@@ -68,7 +59,6 @@ class OrderConfiger {
 
         this.addListener();
         // 控制页只能等待 OBS 的服务端状态，不能用本地旧配置初始化并覆盖播放端。
-        if (!isMirrorPage()) this.publishSharedState();
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.order);
         });
@@ -116,14 +106,6 @@ class OrderConfiger {
         this.elem_globalMaxOrder.value = this.globalMaxOrder;
         this.elem_orderMaxDuration.value = this.orderMaxDuration;
         this.elem_overLimitSkip.value = this.overLimitSkip;
-        localStorage.setItem("userMaxOrder", this.userMaxOrder);
-        localStorage.setItem("globalMaxOrder", this.globalMaxOrder);
-        localStorage.setItem("orderMaxDuration", this.orderMaxDuration);
-        localStorage.setItem("overLimitSkip", this.overLimitSkip);
-        localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
-        localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
-        localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
-        localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
         this.renderHistoryLists();
         window.__orderSettingsState = this.getSharedState();
     }
@@ -217,7 +199,6 @@ class OrderConfiger {
             return;
         }
         this.userMaxOrder = userOrder;
-        localStorage.setItem("userMaxOrder", this.userMaxOrder);
         this.publishSharedState();
     }
 
@@ -228,7 +209,6 @@ class OrderConfiger {
             return;
         }
         this.globalMaxOrder = globalMaxOrder;
-        localStorage.setItem("globalMaxOrder", this.globalMaxOrder);
         this.publishSharedState();
     }
 
@@ -239,7 +219,6 @@ class OrderConfiger {
             return;
         }
         this.orderMaxDuration = orderMaxDuration;
-        localStorage.setItem("orderMaxDuration", this.orderMaxDuration);
         this.publishSharedState();
     }
 
@@ -250,7 +229,6 @@ class OrderConfiger {
             return;
         }
         this.overLimitSkip = overLimitSkip;
-        localStorage.setItem("overLimitSkip", this.overLimitSkip);
         this.publishSharedState();
     }
 
@@ -269,7 +247,6 @@ class OrderConfiger {
         // 添加用户信息
         this.userHistory.push(user);
         // 保存到本地
-        localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
         this.renderHistoryLists();
         this.publishSharedState();
     }
@@ -288,14 +265,12 @@ class OrderConfiger {
         // 添加歌曲信息
         this.songHistory.push(song);
         // 保存到本地
-        localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
         this.renderHistoryLists();
         this.publishSharedState();
     }
 
     clearUserHistory() {
         this.userHistory = [];
-        localStorage.setItem("userHistory", "[]");
         this.renderHistoryLists();
         this.publishSharedState();
         publicMethod.pageAlert("历史点歌用户已清空");
@@ -310,7 +285,6 @@ class OrderConfiger {
         const selectedUser = this.userHistory[selectIndex];
         if (!selectedUser) return;
         this.userHistory.splice(selectIndex, 1);
-        localStorage.setItem("userHistory", JSON.stringify(this.userHistory));
         this.renderHistoryLists();
         this.publishSharedState();
         publicMethod.pageAlert(`已删除历史用户：${selectedUser.uname}`);
@@ -318,7 +292,6 @@ class OrderConfiger {
 
     clearSongHistory() {
         this.songHistory = [];
-        localStorage.setItem("songHistory", "[]");
         this.renderHistoryLists();
         this.publishSharedState();
         publicMethod.pageAlert("历史点歌歌曲已清空");
@@ -333,7 +306,6 @@ class OrderConfiger {
         const selectedSong = this.songHistory[selectIndex];
         if (!selectedSong) return;
         this.songHistory.splice(selectIndex, 1);
-        localStorage.setItem("songHistory", JSON.stringify(this.songHistory));
         this.renderHistoryLists();
         this.publishSharedState();
         publicMethod.pageAlert(`已删除历史歌曲：${selectedSong.sname}`);
@@ -355,7 +327,6 @@ class OrderConfiger {
         // 用户黑名单添加用户
         this.userBlackList.push(user);
         // 保存到本地
-        localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
         this.renderHistoryLists();
         this.publishSharedState();
     }
@@ -372,7 +343,6 @@ class OrderConfiger {
         // 移除页面中用户黑名单的选中用户
         this.elem_userBlackList.querySelector(`option[value='${uid}']`)?.remove();
         // 更新本地存储配置项
-        localStorage.setItem("userBlackList", JSON.stringify(this.userBlackList));
         this.publishSharedState();
     }
 
@@ -392,7 +362,6 @@ class OrderConfiger {
         // 歌曲黑名单添加歌曲
         this.songBlackList.push(song);
         // 保存到本地
-        localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
         this.renderHistoryLists();
         this.publishSharedState();
     }
@@ -409,7 +378,6 @@ class OrderConfiger {
         // 移除页面中歌曲黑名单的选中歌曲
         this.elem_songBlackList.querySelector(`option[value='${sid}']`)?.remove();
         // 更新本地存储配置项
-        localStorage.setItem("songBlackList", JSON.stringify(this.songBlackList));
         this.publishSharedState();
     }
 

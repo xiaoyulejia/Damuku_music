@@ -448,6 +448,116 @@
     color: #e58b8b;
 }
 
+.queueManager {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 20px 14px 28px;
+}
+
+.queueManagerHeader h2 {
+    margin: 4px 0 6px;
+    color: #f5f4ff;
+}
+
+.queueCurrent,
+.sortableQueueItem {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 48px;
+    margin: 8px 0;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 10px;
+    color: #e9e7ff;
+    background: rgba(255, 255, 255, .06);
+}
+
+.queueCurrent {
+    border-color: rgba(152, 136, 255, .45);
+    background: rgba(125, 105, 255, .16);
+}
+
+.sortableQueue {
+    min-height: 10px;
+    margin: 12px 0;
+    padding: 0;
+    list-style: none;
+}
+
+.sortableQueueItem {
+    cursor: default;
+}
+
+.sortableQueueItem.is-dragging {
+    opacity: .55;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, .35);
+}
+
+.dragHandle {
+    width: 30px !important;
+    min-width: 30px !important;
+    padding: 4px !important;
+    cursor: grab;
+}
+
+.queuePosition {
+    min-width: 48px;
+    color: #bdb4ff;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.queueSongName {
+    flex: 1 1 30%;
+    font-weight: 700;
+}
+
+.queueArtist,
+.queueRequester {
+    flex: 0 1 20%;
+    color: #aaa9c0;
+    font-size: 12px;
+}
+
+.promoteButton {
+    flex: 0 0 auto;
+    width: auto !important;
+    min-width: 86px;
+}
+
+.moveButton {
+    min-width: 54px !important;
+    padding: 7px 8px !important;
+}
+
+.queueManagerActions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.queueManagerStatus {
+    min-height: 20px;
+    margin: 10px 0 0;
+    color: #aaa9c0;
+    font-size: 12px;
+}
+
+.queueManagerStatus[data-state="loading"] { color: #d9b86c; }
+.queueManagerStatus[data-state="success"] { color: #72c994; }
+.queueManagerStatus[data-state="error"] { color: #e58b8b; }
+.queueManagerStatus[data-state="dirty"] { color: #d9b86c; }
+
+@media (max-width: 560px) {
+    .sortableQueueItem { flex-wrap: wrap; }
+    .queueSongName { min-width: calc(100% - 48px); }
+    .queueArtist, .queueRequester { flex: 1 1 40%; }
+    .promoteButton { margin-left: auto; }
+}
+
 .settingsOnly .customCssCell {
     padding: 16px !important;
 }

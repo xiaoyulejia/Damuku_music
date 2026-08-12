@@ -24,33 +24,15 @@ export default class PublicMethod {
         return `${protocol}//${window.location.host}${resolved}`;
     }
 
-    // 加载配置项
-    static readConfig(obj) {
-        // 根据字段名读取配置项
-        for (const key in obj) {
-            if (!localStorage.getItem(key)) {
-                continue;
-            }
-            if (typeof obj[key] == "string") {
-                // 字符串类型配置项
-                obj[key] = localStorage.getItem(key);
-            } else if (typeof obj[key] == "number") {
-                // 数字类型配置项
-                obj[key] = parseInt(localStorage.getItem(key));
-            } else if (typeof obj[key] == "object" || Array.isArray(obj[key])) {
-                // 对象和数组
-                obj[key] = JSON.parse(localStorage.getItem(key));
-            }
-            // 其他为function类型
-        }
-    }
-
     // 页面提示输出
     static pageAlert(str) {
         const normalizedQuery = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         const params = new URLSearchParams(normalizedQuery);
         const liveMode = !['0', 'false', 'no', 'off'].includes((params.get('livemode') || 'true').toLowerCase());
-        const showAlerts = ['1', 'true', 'yes', 'on'].includes((localStorage.getItem('liveShowAlerts') || 'false').toLowerCase());
+        const configuredShowAlerts = window.__displaySettings?.liveShowAlerts;
+        const showAlerts = configuredShowAlerts == null
+            ? false
+            : Boolean(configuredShowAlerts);
         if (liveMode && !showAlerts) return;
         let alertBox = document.getElementsByClassName("alertBox")[0];
         let text = document.createElement('div');

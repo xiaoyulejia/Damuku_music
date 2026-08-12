@@ -1,4 +1,5 @@
 import musicPlayer from './components/music-player.js?v=20260812-4';
+import './components/queue-manager.js?v=20260812-1';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
 import danmuConfiger from './components/danmu-configer.js?v=20260810-41';
@@ -15,6 +16,12 @@ async function initializeMainPage() {
     const obsDisplayMode = !settingsOnly && !['monitor', 'control', 'preview'].includes(pageRole) && requestedLiveMode;
     let liveMode = obsDisplayMode;
     let serverDisplaySettings = null;
+    let settingsRevision = 0;
+    let settingsGlobalRevision = 0;
+    let settingsRoomRevision = 0;
+    let settingsSaveQueue = Promise.resolve();
+    const syncBaseForSettings = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
+    const roomIdForSettings = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
 
     // 页面可能来自浏览器缓存，而 Node 服务已经被关闭。先独立探测后端，
     // 不让后续按钮表现成“点击无反应”。遮罩只保留重新检查按钮。
@@ -26,8 +33,125 @@ async function initializeMainPage() {
         return value === null ? defaultValue : ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
     };
 
+    const legacyArray = key => {
+        try {
+            const value = JSON.parse(localStorage.getItem(key) || '[]');
+            return Array.isArray(value) ? value : [];
+        } catch (_) {
+            return [];
+        }
+    };
+
+    const readLegacySettings = () => ({
+        order: {
+            userMaxOrder: Number(localStorage.getItem('userMaxOrder') || 3),
+            globalMaxOrder: Number(localStorage.getItem('globalMaxOrder') || 15),
+            orderMaxDuration: Number(localStorage.getItem('orderMaxDuration') || 0),
+            overLimitSkip: Number(localStorage.getItem('overLimitSkip') || 0),
+            userHistory: legacyArray('userHistory'),
+            songHistory: legacyArray('songHistory'),
+            userBlackList: legacyArray('userBlackList'),
+            songBlackList: legacyArray('songBlackList')
+        },
+        display: {
+            overlayOpacity: Number(localStorage.getItem('overlayOpacity') || 88),
+            overlayBlur: Number(localStorage.getItem('overlayBlur') || 14),
+            overlayTheme: localStorage.getItem('overlayTheme') || 'dark',
+            liveShowPlayer: readFlag('liveShowPlayer', false),
+            liveShowControls: readFlag('liveShowControls', false),
+            liveShowQueueHeader: readFlag('liveShowQueueHeader', true),
+            liveShowRequester: readFlag('liveShowRequester', true),
+            liveShowAlerts: readFlag('liveShowAlerts', false),
+            customOverlayCss: localStorage.getItem('customOverlayCss') || ''
+        },
+        login: {
+            platform: musicServer.platform,
+            songListId: localStorage.getItem('songListId') || '',
+            songListHistory: legacyArray('songListHistory')
+        }
+    });
+
+    const applyAuthoritativeSettings = data => {
+        if (!data) return;
+        settingsRevision = Number(data.revision || Math.max(data.globalRevision || 0, data.roomRevision || 0));
+        settingsGlobalRevision = Number(data.globalRevision || 0);
+        settingsRoomRevision = Number(data.roomRevision || 0);
+        serverDisplaySettings = data.display || null;
+        window.__displaySettings = serverDisplaySettings || {};
+        if (data.order) orderConfiger.applySharedState(data.order);
+        if (data.login) loginConfiger.applySharedState(data.login);
+        if (data.volume != null) musicPlayer.applyVolume(data.volume);
+        applyAppearance();
+    };
+
+    const fetchAuthoritativeSettings = async ({ migrate = false } = {}) => {
+        if (!syncBaseForSettings) return null;
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        try {
+            const response = await fetch(`${syncBaseForSettings}/live/settings?room_id=${encodeURIComponent(roomIdForSettings)}`, {
+                cache: 'no-store',
+                signal: controller.signal
+            });
+            const result = await response.json();
+            if (!response.ok || result.code !== 0) return null;
+            let data = result.data;
+            if (migrate && !data.hasStored) {
+                const legacy = readLegacySettings();
+                const hasLegacy = Object.keys(localStorage).some(key => [
+                    'userMaxOrder', 'globalMaxOrder', 'orderMaxDuration', 'overLimitSkip',
+                    'userHistory', 'songHistory', 'userBlackList', 'songBlackList',
+                    'overlayOpacity', 'overlayBlur', 'overlayTheme', 'customOverlayCss',
+                    'songListId', 'songListHistory'
+                ].includes(key));
+                if (hasLegacy) {
+                    const migrated = await saveAuthoritativeSettings(legacy, { allowMigration: true });
+                    if (migrated) data = migrated;
+                }
+            }
+            applyAuthoritativeSettings(data);
+            return data;
+        } catch (_) {
+            return null;
+        } finally {
+            clearTimeout(timeout);
+        }
+    };
+
+    const saveAuthoritativeSettings = async (settings, { allowMigration = false } = {}) => {
+        const save = async () => {
+            if (!syncBaseForSettings) return null;
+            try {
+                const response = await fetch(`${syncBaseForSettings}/live/settings`, {
+                method: 'PUT',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomIdForSettings,
+                    revision: allowMigration ? undefined : settingsRevision,
+                    globalRevision: allowMigration ? undefined : settingsGlobalRevision,
+                    roomRevision: allowMigration ? undefined : settingsRoomRevision,
+                    settings
+                }),
+                cache: 'no-store'
+                });
+                const result = await response.json().catch(() => null);
+                if (!response.ok || result?.code !== 0) {
+                    if (!allowMigration) await fetchAuthoritativeSettings();
+                    return null;
+                }
+                applyAuthoritativeSettings(result.data);
+                return result.data;
+            } catch (_) {
+                return null;
+            }
+        };
+        const task = settingsSaveQueue.then(save, save);
+        settingsSaveQueue = task.catch(() => null);
+        return task;
+    };
+
     const applyCustomCss = () => {
-        const customCss = serverDisplaySettings?.customOverlayCss ?? localStorage.getItem('customOverlayCss') ?? '';
+        const customCss = serverDisplaySettings?.customOverlayCss ?? '';
         const style = document.getElementById('customOverlayStyle');
         const editor = document.getElementById('customOverlayCss');
         if (style) style.textContent = customCss;
@@ -37,14 +161,14 @@ async function initializeMainPage() {
     const applyAppearance = () => {
         const display = serverDisplaySettings || {};
         const value = (key, fallback) => display[key] == null ? fallback : display[key];
-        const opacity = Number(value('overlayOpacity', Number(localStorage.getItem('overlayOpacity') || 88)));
-        const blur = Number(value('overlayBlur', Number(localStorage.getItem('overlayBlur') || 14)));
-        const theme = value('overlayTheme', localStorage.getItem('overlayTheme') || 'dark');
-        const liveShowPlayer = Boolean(value('liveShowPlayer', readFlag('liveShowPlayer', false)));
-        const liveShowControls = Boolean(value('liveShowControls', readFlag('liveShowControls', false)));
-        const liveShowQueueHeader = Boolean(value('liveShowQueueHeader', readFlag('liveShowQueueHeader', true)));
-        const liveShowRequester = Boolean(value('liveShowRequester', readFlag('liveShowRequester', true)));
-        const liveShowAlerts = Boolean(value('liveShowAlerts', readFlag('liveShowAlerts', false)));
+        const opacity = Number(value('overlayOpacity', 88));
+        const blur = Number(value('overlayBlur', 14));
+        const theme = value('overlayTheme', 'dark');
+        const liveShowPlayer = Boolean(value('liveShowPlayer', false));
+        const liveShowControls = Boolean(value('liveShowControls', false));
+        const liveShowQueueHeader = Boolean(value('liveShowQueueHeader', true));
+        const liveShowRequester = Boolean(value('liveShowRequester', true));
+        const liveShowAlerts = Boolean(value('liveShowAlerts', false));
         document.documentElement.style.setProperty('--overlay-opacity', String(opacity / 100));
         document.documentElement.style.setProperty('--overlay-blur', `${blur}px`);
         document.body.classList.toggle('liveMode', liveMode);
@@ -88,10 +212,9 @@ async function initializeMainPage() {
         customOverlayCss: document.getElementById('customOverlayCss')?.value || ''
     });
     const publishDisplaySettings = () => {
-        serverDisplaySettings = getDisplaySettings();
-        musicPlayer.sendCommand('settings', { display: serverDisplaySettings });
-        applyAppearance();
+        saveAuthoritativeSettings({ display: getDisplaySettings() });
     };
+    await fetchAuthoritativeSettings({ migrate: true });
     applyAppearance();
 
     const opacityInput = document.getElementById('overlayOpacity');
@@ -99,35 +222,29 @@ async function initializeMainPage() {
     const themeInput = document.getElementById('overlayTheme');
     const customCssEditor = document.getElementById('customOverlayCss');
     if (opacityInput) opacityInput.oninput = () => {
-        localStorage.setItem('overlayOpacity', opacityInput.value);
         publishDisplaySettings();
     };
     if (blurInput) blurInput.oninput = () => {
-        localStorage.setItem('overlayBlur', blurInput.value);
         publishDisplaySettings();
     };
     if (themeInput) themeInput.onchange = () => {
-        localStorage.setItem('overlayTheme', themeInput.value);
         publishDisplaySettings();
     };
     ['liveShowPlayer', 'liveShowControls', 'liveShowQueueHeader', 'liveShowRequester', 'liveShowAlerts'].forEach(key => {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
-            localStorage.setItem(key, String(input.checked));
             publishDisplaySettings();
         };
     });
-    if (customCssEditor) customCssEditor.value = localStorage.getItem('customOverlayCss') || '';
+    if (customCssEditor) customCssEditor.value = '';
     const applyCustomCssButton = document.getElementById('applyCustomCss');
     const clearCustomCssButton = document.getElementById('clearCustomCss');
     if (applyCustomCssButton) applyCustomCssButton.onclick = () => {
-        localStorage.setItem('customOverlayCss', customCssEditor?.value || '');
         applyCustomCss();
         publishDisplaySettings();
         publicMethod.pageAlert('自定义 CSS 已应用');
     };
     if (clearCustomCssButton) clearCustomCssButton.onclick = () => {
-        localStorage.removeItem('customOverlayCss');
         publishDisplaySettings();
         applyCustomCss();
     };
@@ -142,26 +259,7 @@ async function initializeMainPage() {
         elem_setting.style.height = "0px";
         elem_orderTable.onclick = null;
     }
-    const syncBaseForSettings = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
-    const syncDisplaySettings = async () => {
-        if (!syncBaseForSettings) return;
-        try {
-            const roomId = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
-            const response = await fetch(`${syncBaseForSettings}/live/settings?room_id=${encodeURIComponent(roomId)}`, { cache: 'no-store' });
-            const result = await response.json();
-            if (response.ok && result.code === 0 && result.data?.display) {
-                serverDisplaySettings = result.data.display;
-                applyAppearance();
-            }
-            if (response.ok && result.code === 0 && result.data?.order) {
-                window.dispatchEvent(new CustomEvent('bilibili-ordersong-shared-settings', {
-                    detail: { order: result.data.order, login: result.data.login || null }
-                }));
-            }
-        } catch (_) { /* backend guard handles unavailable service */ }
-    };
-    syncDisplaySettings();
-    window.setInterval(syncDisplaySettings, 5000);
+    window.setInterval(() => fetchAuthoritativeSettings(), 5000);
 
     // 隐藏设置界面
     document.getElementById('upBtn').onclick = () => {

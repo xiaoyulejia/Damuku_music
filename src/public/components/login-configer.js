@@ -2,26 +2,19 @@ import musicPlayer from "./music-player.js?v=20260812-4";
 import publicMethod from "../utils/common.js?v=20260810-41";
 import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
 
-function readArray(key) {
-    try {
-        const value = JSON.parse(localStorage.getItem(key) || '[]');
-        return Array.isArray(value) ? value : [];
-    } catch (_) {
-        return [];
-    }
-}
-
 /**
  * 登录配置
  */
 class LoginConfiger {
 
     // 空闲歌单ID
-    songListId = localStorage.getItem("songListId") || "7294328248";
+    songListId = "7294328248";
     elem_songListId = document.getElementById("songListId");
 
     // 历史加载的歌单ID
-    songListHistory = readArray("songListHistory");
+    // 设置由服务端房间状态统一提供，页面初始化时先使用空列表，
+    // 避免依赖已废弃的 localStorage readArray 辅助函数。
+    songListHistory = [];
     elem_songListHistory = document.getElementById("songListHistory");
 
     neteaseLoginStatus = {
@@ -51,8 +44,6 @@ class LoginConfiger {
                 this.setNeteaseLoginStatus({ state: 'logged-out', text: '未登录' }, false);
             }
         }
-        // 控制页的 localStorage 可能是旧浏览器/旧房间数据，不能在启动时回写 OBS。
-        if (!musicPlayer.isMirrorMode) this.publishSharedState();
         window.addEventListener('bilibili-ordersong-shared-settings', event => {
             this.applySharedState(event.detail?.login);
         });
@@ -143,11 +134,9 @@ class LoginConfiger {
         if (typeof state.songListId === 'string' && state.songListId) {
             this.songListId = state.songListId;
             this.elem_songListId.value = state.songListId;
-            localStorage.setItem("songListId", state.songListId);
         }
         if (Array.isArray(state.songListHistory)) {
             this.songListHistory = state.songListHistory;
-            localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
             this.loadSongListHistory();
         }
         if (state.neteaseLoginStatus) this.setNeteaseLoginStatus(state.neteaseLoginStatus, false);
@@ -320,7 +309,7 @@ class LoginConfiger {
             });
             if (switchSequence !== this.activeSongListSwitchSequence) return false;
             if (!response?.ok || response.result?.result?.accepted === false || response.result?.result?.switched !== true) {
-                const message = response?.result?.result?.reason || '后端拒绝切换歌单，当前歌单保持不变';
+                const message = response?.result?.result?.reason || response?.result?.message || response?.reason || '后端拒绝切换歌单，当前歌单保持不变';
                 this.setSongListSwitchStatus(message, 'error', 6000);
                 publicMethod.pageAlert(message);
                 return false;
@@ -328,7 +317,6 @@ class LoginConfiger {
             this.songListId = listId;
             document.getElementById("songListId").value = listId;
             this.addSongListHistory(listId, platform);
-            localStorage.setItem("songListId", this.songListId);
             this.publishSharedState();
             this.setSongListSwitchStatus('歌单切换成功，OBS 已收到新歌单。', 'success', 5000);
             publicMethod.pageAlert('歌单切换成功');
@@ -399,7 +387,6 @@ class LoginConfiger {
         this.elem_songListHistory.appendChild(elem_option);
 
         // 保存配置信息
-        localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
         this.publishSharedState();
     }
 
@@ -415,7 +402,6 @@ class LoginConfiger {
         if (!selectedItem) return;
 
         this.songListHistory = this.songListHistory.filter(item => item !== selectedItem);
-        localStorage.setItem("songListHistory", JSON.stringify(this.songListHistory));
         this.loadSongListHistory();
         this.publishSharedState();
         publicMethod.pageAlert(`已删除历史歌单：${selectedItem.listId}`);
@@ -423,7 +409,6 @@ class LoginConfiger {
 
     clearSongListHistory() {
         this.songListHistory = [];
-        localStorage.setItem("songListHistory", "[]");
         this.loadSongListHistory();
         this.publishSharedState();
         publicMethod.pageAlert("历史空闲歌单已清空");

@@ -9,6 +9,7 @@
 /cache
 /data
 /api_reference
+/lib_piliplus
 
 # 本地环境变量和凭据文件
 .env
