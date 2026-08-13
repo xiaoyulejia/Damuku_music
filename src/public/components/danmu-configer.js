@@ -1,7 +1,7 @@
 import musicPlayer from "./music-player.js?v=20260812-23";
 import publicMethod from "../utils/common.js?v=20260810-41";
 import musicServer from "../services/musicServers/music-server.js?v=20260812-22";
-import danmuServer from "../services/danmuServers/danmu-server.js?v=20260812-1";
+import danmuServer from "../services/danmuServers/danmu-server.js?v=20260813-1";
 
 /* 在此处启动弹幕服务 */
 class DanmuConfiger {

@@ -6,10 +6,6 @@ export default class BilibiliServer {
     socketUrl = "";
     webSocket = null;
     roomId = 0;
-    uid = 0;
-    timer = null;
-    authPacket = null;
-    heartPacket = null;
     reconnectCount = 0;
     reconnectTimer = null;
     closing = false;
@@ -33,15 +29,13 @@ export default class BilibiliServer {
         // 默认使用历史弹幕轮询；追加 realtime=1 才启用WebSocket模式。
         this.historyOnly = !realtime || ['1', 'true', 'yes', 'on'].includes((params.get('history') || '').toLowerCase());
         this.roomId = Number(params.get('roomid') || params.get('room_id') || 0);
-        const suppliedToken = params.get('token') || '';
         this.debugLog('连接参数', {
             roomId: this.roomId,
-            tokenSource: suppliedToken ? 'url' : 'server',
-            api: `${this.baseUrl}/live/danmu-info`,
+            mode: this.historyOnly ? 'history' : 'realtime-shared-proxy',
             debug: this.debug
         });
         if (!this.roomId) {
-            publicMethod.pageAlertRepeat("缺少直播间号，请使用 ?roomid=房间号&token=弹幕token");
+            publicMethod.pageAlertRepeat("缺少直播间号，请使用 ?roomid=房间号");
             return false;
         }
 
@@ -50,61 +44,17 @@ export default class BilibiliServer {
             return true;
         }
 
-        let info;
-        if (suppliedToken) {
-            info = { token: suppliedToken, host_list: [] };
-        } else {
-            try {
-                const response = await axios.get(`${this.baseUrl}/live/danmu-info`, { params: { room_id: this.roomId } });
-                if (response.data.code !== 0) throw new Error(response.data.message || '接口返回错误');
-                info = response.data.data;
-                if (info?._room_id) this.roomId = Number(info._room_id);
-                this.debugLog('getDanmuInfo 返回结果', {
-                    code: response.data.code,
-                    message: response.data.message,
-                    tokenLength: info?.token?.length || 0,
-                    hostList: info?.host_list || []
-                });
-            } catch (error) {
-                this.debugLog('getDanmuInfo 请求失败', {
-                    message: error.message,
-                    status: error.response?.status,
-                    response: error.response?.data
-                });
-                console.error('获取弹幕鉴权信息失败:', error);
-                publicMethod.pageAlertRepeat("弹幕token获取失败，请检查直播间号或直接传入token");
-                return false;
-            }
-        }
-
-        const host = params.get('host');
-        const servers = [...new Set((info.host_list || []).map(item => `wss://${item.host}:${item.wss_port}/sub`))];
-        // 对应旧 Dart 项目的 getSocket()：失败后依次尝试 host_list 节点。
-        const serverIndex = Math.min(this.reconnectCount, Math.max(servers.length - 1, 0));
-        const selectedServer = servers[serverIndex] || 'wss://broadcastlv.chat.bilibili.com:443/sub';
-        const upstreamSocketUrl = host
-            ? (host.startsWith('ws') ? host : `wss://${host}/sub`)
-            : selectedServer;
-        // 服务端代理按旧 Dart 项目使用 protover=3 + Brotli，浏览器只接收已解析的JSON。
+        // token、Cookie、真实房间号、host轮换和B站上游连接全部由Node房间中心管理。
+        // 浏览器只订阅房间，避免敏感token出现在URL和每个页面各建一条B站连接。
         const proxyBase = publicMethod.resolveWebSocketBase(window.API_CONFIG?.bili_api);
-        const uid = Number(params.get('uid') || 0);
-        const proxyParams = new URLSearchParams({ room_id: String(this.roomId), uid: String(uid), token: info.token, host: upstreamSocketUrl });
+        const proxyParams = new URLSearchParams({ room_id: String(this.roomId) });
         if (this.debug) proxyParams.set('debug', '1');
         this.socketUrl = `${proxyBase}/live/ws?${proxyParams}`;
-        this.debugLog('弹幕鉴权信息', {
-            tokenLength: info.token?.length || 0,
-            tokenAppliedToAuth: Boolean(info.token && proxyParams.get('token')),
-            hostCount: servers.length,
-            serverIndex,
-            hosts: servers,
-            upstreamSocketUrl,
-            auth: { roomid: this.roomId, uid, protover: 3, platform: 'web', type: 2 }
-        });
+        this.debugLog('共享实时弹幕订阅', { roomId: this.roomId, socketUrl: this.socketUrl });
         if (this.debug) this.loadHistoryForDebug();
 
         try {
             this.webSocket = new WebSocket(this.socketUrl);
-            this.webSocket.binaryType = 'arraybuffer';
             this.openSocket();
             return true;
         } catch (error) {
@@ -123,6 +73,7 @@ export default class BilibiliServer {
             try {
                 const message = JSON.parse(typeof event.data === 'string' ? event.data : this.textDecoder.decode(new Uint8Array(event.data)));
                 if (message.type === 'status') this.debugLog(`代理状态: ${message.status}`, message.detail);
+                if (message.type === 'status' && message.detail?.roomId) this.roomId = Number(message.detail.roomId);
                 if (message.type === 'status' && message.status === 'upstream authenticated') {
                     this.reconnectCount = 0;
                     if (this.debug) {
@@ -140,6 +91,10 @@ export default class BilibiliServer {
                         );
                     }
                     if (this.danmuMessage) this.danmuMessage(message.data);
+                }
+                if (message.type === 'error') {
+                    console.error('[BilibiliDanmu][WebSocket] 实时弹幕代理错误:', message.code, message.message);
+                    publicMethod.pageAlertRepeat(`实时弹幕连接失败：${message.message || message.code || '未知错误'}`);
                 }
             } catch (error) {
                 this.debugLog('实时弹幕JSON解析失败', error);
@@ -161,68 +116,6 @@ export default class BilibiliServer {
             this.reconnectTimer = null;
             this.connect();
         }, 3000);
-    }
-
-    handlePacket(packet) {
-        if (!packet || packet.byteLength < 16) return 0;
-        const view = new DataView(packet);
-        const packetLen = view.getUint32(0);
-        const headerLen = view.getUint16(4);
-        const version = view.getUint16(6);
-        const operation = view.getUint32(8);
-        this.debugLog('收到数据包', { packetLen, headerLen, version, operation, sequenceId: view.getUint32(12) });
-        if (operation === 8) this.debugLog('B站弹幕认证成功');
-        if (operation === 3) this.debugLog('收到心跳回复');
-        if (packetLen < headerLen || packetLen > packet.byteLength) return 0;
-        const body = packet.slice(headerLen, packetLen);
-        if (operation !== 5) return packetLen;
-        if (version === 0 || version === 1) this.emitMessages(body);
-        else if (version === 2) {
-            try { this.handleUnzipPacket(pako.inflate(new Uint8Array(body)).buffer); }
-            catch (error) { this.debugLog('弹幕zlib解压失败', error); }
-        }
-        return packetLen;
-    }
-
-    // 对应旧 Dart 项目的 _processingData：继续处理同一帧中剩余的数据包。
-    handlePacketStream(buffer) {
-        let offset = 0;
-        while (offset < buffer.byteLength) {
-            const length = this.handlePacket(buffer.slice(offset));
-            if (!length) break;
-            offset += length;
-        }
-    }
-
-    handleUnzipPacket(buffer) {
-        this.handlePacketStream(buffer);
-    }
-
-    emitMessages(body) {
-        const text = this.textDecoder.decode(new Uint8Array(body)).replace(/\0+$/g, '');
-        this.debugLog('解压后的消息文本', text);
-        // 一个数据包可能拼接多个JSON，按对象边界拆分。
-        const candidates = text.replace(/}\s*{/g, '}\n{').split('\n');
-        for (const candidate of candidates) {
-            try {
-                const message = JSON.parse(candidate);
-                this.debugLog('原始弹幕消息', message);
-                if (!message.cmd?.startsWith('DANMU_MSG')) continue;
-                const info = message.info || [];
-                // 参考旧 Dart 项目 controller.dart：info[0][15] 是结构化用户信息。
-                const user = info[0]?.[15]?.user;
-                const danmu = {
-                    uid: user?.uid || info[2]?.[0] || info[2]?.[1] || 0,
-                    uname: user?.base?.name || info[2]?.[1] || '用户',
-                    danmu: info[1] || ''
-                };
-                this.debugLog('解析后的弹幕', danmu);
-                if (this.debug) console.table([danmu]);
-                if (this.danmuMessage) this.danmuMessage(danmu);
-            } catch (error) {
-                this.debugLog('弹幕JSON解析失败', { error, candidate });
-            }
-        }
     }
 
     async loadHistoryForDebug() {
@@ -311,26 +204,11 @@ export default class BilibiliServer {
         else console.debug(`[BilibiliDanmu][debug] ${label}`, value);
     }
 
-    createPacket(content, operation, sequenceId) {
-        const bytes = new TextEncoder().encode(content);
-        const buffer = new ArrayBuffer(bytes.length + 16);
-        const view = new DataView(buffer);
-        view.setUint32(0, bytes.length + 16, false);
-        view.setUint16(4, 16, false);
-        view.setUint16(6, 1, false);
-        view.setUint32(8, operation, false);
-        view.setUint32(12, sequenceId, false);
-        new Uint8Array(buffer, 16).set(bytes);
-        return buffer;
-    }
-
     close() {
         this.closing = true;
         this.stopHistoryConsole();
         if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
-        clearInterval(this.timer);
-        this.timer = null;
         if (this.webSocket) {
             this.webSocket.onclose = null;
             this.webSocket.onerror = null;

@@ -1,5 +1,7 @@
 # B 站直播间实时弹幕获取与本项目接入方案
 
+> 历史设计说明：本文保留协议研究过程。实时模式已经按服务端会话和单房间共享连接方案实现，当前代码与验收方式以 [`live_danmu_realtime_mode.md`](./live_danmu_realtime_mode.md) 为准。
+
 ## 1. 结论
 
 `lib_piliplus` 获取实时直播弹幕的方式是：

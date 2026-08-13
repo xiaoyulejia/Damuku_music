@@ -104,6 +104,14 @@ git check-ignore -v config/config.yaml config/webapi.js src/public/webapi.js log
 http://localhost:8000/order/?roomid=房间号&debug=1
 ```
 
+B 站公开弹幕无需登录。默认仍使用历史轮询；需要完整实时 WebSocket 链路时使用：
+
+```text
+http://localhost:8000/order/?roomid=房间号&realtime=1&debug=1
+```
+
+实时模式由 Node 维护匿名 Cookie/`buvid3`、弹幕 Token 和每个真实房间唯一的 B 站上游连接。浏览器只提交房间号，不应在地址中加入 B 站 Cookie、Token 或上游 host。
+
 如果浏览器阻止自动播放，OBS 播放页会出现一次性的“启用声音”提示；在 OBS 页面直接点击后，控制页即可继续控制播放。
 
 ## 观众指令

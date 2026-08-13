@@ -5,18 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const encrypt = require('../utils/encrypt');
 const { LocalStore, mergeSettings } = require('../services/local-store');
+const { getBiliSession } = require('../services/bili-session');
+const { getAttachedLiveDanmuHub } = require('../services/bili-live-ws');
 
 // 创建axios实例，指向B站开放平台
 const api = axios.create({
     baseURL: "https://live-open.biliapi.com"
-});
-
-const liveApi = axios.create({
-    baseURL: "https://api.live.bilibili.com",
-    headers: {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-        'referer': 'https://live.bilibili.com/'
-    }
 });
 
 // 鉴权加密处理headers
@@ -633,14 +627,6 @@ function applyRoomCommand(roomId, command) {
     return { state: persisted, result };
 }
 
-const MIXIN_KEY_TABLE = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13];
-
-function wbiSign(params, mixinKey) {
-    const signed = { ...params, wts: Math.floor(Date.now() / 1000) };
-    const query = Object.keys(signed).sort().map(key => `${encodeURIComponent(key)}=${encodeURIComponent(String(signed[key]).replace(/[!'()*]/g, ''))}`).join('&');
-    return { ...signed, w_rid: crypto.createHash('md5').update(query + mixinKey).digest('hex') };
-}
-
 // 兼容直播姬等内置 WebView：部分版本会把本地页面当作不同安全上下文，
 // 对 JSON POST 先发 OPTIONS 预检。普通同源页面不会受到影响。
 router.use((req, res, next) => {
@@ -949,42 +935,21 @@ router.get('/live/sync-commands', (req, res) => {
     res.json({ code: 0, data: commands });
 });
 
-async function getWbiMixinKey() {
-    const { data } = await axios.get('https://api.bilibili.com/x/web-interface/nav');
-    const wbi = data?.data?.wbi_img;
-    if (!wbi?.img_url || !wbi?.sub_url) throw new Error('无法获取B站WBI密钥');
-    const fileName = url => url.split('/').pop().split('.')[0];
-    const origin = fileName(wbi.img_url) + fileName(wbi.sub_url);
-    return MIXIN_KEY_TABLE.map(index => origin[index] || '').join('');
-}
-
-async function resolveRoomId(roomId) {
-    try {
-        const response = await liveApi.get('/xlive/web-room/v1/index/getH5InfoByRoom', {
-            params: { room_id: roomId }
-        });
-        return Number(
-            response.data?.data?.room_info?.room_id ||
-            response.data?.data?.room_info?.roomid ||
-            response.data?.data?.room_id ||
-            roomId
-        );
-    } catch (_) {
-        return roomId;
-    }
-}
-
 // 普通直播间弹幕鉴权，不依赖B站开放平台许可
 router.get('/live/danmu-info', async (req, res) => {
     const roomId = Number(req.query.room_id || req.query.roomid);
     if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
     try {
-        const realRoomId = await resolveRoomId(roomId);
-        const params = wbiSign({ id: realRoomId, web_location: 444.8 }, await getWbiMixinKey());
-        const response = await liveApi.get('/xlive/web-room/v1/index/getDanmuInfo', { params });
-        res.status(response.status).json({
-            ...response.data,
-            data: { ...response.data.data, _room_id: realRoomId }
+        const session = getBiliSession();
+        const info = await session.getDanmuInfo(roomId);
+        res.json({
+            code: 0,
+            message: '0',
+            data: {
+                _room_id: info.roomId,
+                host_list: info.raw.host_list,
+                session: session.diagnostics()
+            }
         });
     } catch (error) {
         console.error('获取B站直播弹幕token失败:', error.response?.data || error.message);
@@ -997,19 +962,24 @@ router.get('/live/danmu-history', async (req, res) => {
     const roomId = Number(req.query.room_id || req.query.roomid);
     if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
     try {
-        const realRoomId = await resolveRoomId(roomId);
-        const response = await liveApi.get('/xlive/web-room/v1/dM/gethistory', {
-            params: { roomid: realRoomId },
-            headers: { referer: `https://live.bilibili.com/${realRoomId}` }
-        });
-        res.status(response.status).json({
-            ...response.data,
-            data: { ...response.data.data, _room_id: realRoomId }
+        const history = await getBiliSession().getHistory(roomId);
+        res.json({
+            ...history.raw,
+            data: { ...history.raw.data, _room_id: history.roomId }
         });
     } catch (error) {
         console.error('获取B站历史弹幕失败:', error.response?.data || error.message);
         res.status(502).json({ code: -1, message: '获取B站历史弹幕失败', detail: error.message });
     }
+});
+
+// 只返回无敏感信息的连接汇总，用于确认漏消息发生在上游、解析还是浏览器转发层。
+router.get('/live/metrics', (req, res) => {
+    const roomId = Number(req.query.room_id || req.query.roomid);
+    if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
+    const metrics = getAttachedLiveDanmuHub()?.metricsFor(roomId);
+    if (!metrics) return res.status(404).json({ code: -1, message: '该房间当前没有实时弹幕连接' });
+    res.json({ code: 0, data: metrics });
 });
 
 /**
