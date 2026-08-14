@@ -32,6 +32,9 @@ const DEFAULT_SETTINGS = {
         lyricsOverlayLines: 1,
         lyricsOverlayWidth: 92,
         progressSeekEnabled: true,
+        multiSceneHandoffEnabled: false,
+        multiSceneAutoSwitchEnabled: false,
+        multiSceneHeartbeatThresholdMs: 5000,
         customOverlayCss: ''
     },
     login: null,
@@ -72,9 +75,16 @@ function mergeSettings(input = {}) {
     for (const key of ['liveShowPlayer', 'liveShowControls', 'liveShowQueueHeader', 'liveShowRequester', 'liveShowAlerts']) {
         result.display[key] = Boolean(display[key] ?? result.display[key]);
     }
-    for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled']) {
+    for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled', 'multiSceneHandoffEnabled', 'multiSceneAutoSwitchEnabled']) {
         result.display[key] = Boolean(display[key] ?? result.display[key]);
     }
+    if (!result.display.multiSceneHandoffEnabled) result.display.multiSceneAutoSwitchEnabled = false;
+    result.display.multiSceneHeartbeatThresholdMs = numeric(
+        display.multiSceneHeartbeatThresholdMs,
+        5000,
+        4000,
+        8000
+    );
     result.display.lyricsDisplayMode = display.lyricsDisplayMode === 'scroll' ? 'scroll' : 'wrap';
     result.display.lyricsOffsetMs = numeric(display.lyricsOffsetMs, 0, -5000, 5000);
     result.display.lyricsFontSize = numeric(display.lyricsFontSize, 22, 12, 64);
@@ -92,8 +102,8 @@ function mergeSettings(input = {}) {
         }
         : null;
     result.schemaVersion = 1;
-    result.updatedAt = Number(input.updatedAt) || 0;
-    result.revision = Number(input.revision) || 0;
+    result.updatedAt = Number.isFinite(Number(input.updatedAt)) ? Math.max(0, Math.trunc(Number(input.updatedAt))) : 0;
+    result.revision = Number.isFinite(Number(input.revision)) ? Math.max(0, Math.trunc(Number(input.revision))) : 0;
     return result;
 }
 

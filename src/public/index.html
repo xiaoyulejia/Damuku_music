@@ -12,9 +12,9 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260813-1"></script>
+    <script type="module" src="./main.js?v=20260815-2"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-25">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260815-2">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
@@ -99,6 +99,24 @@
                 <input id="volumeSlider" type="range" min="0" max="100" step="1" value="50">
                 <output id="volumeValue">50%</output>
             </div>
+        </section>
+
+        <section id="sceneHandoffPanel" class="playerCard sceneHandoffPanel" hidden>
+            <div class="cardTitle">
+                <div>
+                    <span class="eyebrow">SCENE HANDOFF</span>
+                    <h2>播放源切换</h2>
+                </div>
+                <span id="sceneHandoffStatus" class="statusPill">未启用</span>
+            </div>
+            <p id="sceneHandoffHelp" class="setting_tip">选择当前已加载的直播姬场景，让它接管唯一播放端。</p>
+            <div class="sceneHandoffControls">
+                <label for="sceneHandoffTarget">目标播放源</label>
+                <select id="sceneHandoffTarget"></select>
+                <button id="sceneHandoffSwitch" class="primaryAction" type="button" disabled>切换播放源</button>
+            </div>
+            <div id="sceneAutoSwitchStatus" class="setting_tip" aria-live="polite"></div>
+            <div id="sceneHandoffCandidates" class="setting_tip sceneHandoffCandidates" aria-live="polite"></div>
         </section>
 
         <!-- 点歌队列 -->
@@ -351,6 +369,33 @@
                                 <td colspan="2"><label class="setting_check"><input id="progressSeekEnabled" type="checkbox">允许控制页跳转</label></td>
                             </tr>
                             <tr>
+                                <td>直播姬多场景手动切换</td>
+                                <td colspan="2">
+                                    <label class="setting_check"><input id="multiSceneHandoffEnabled" type="checkbox">启用播放源切换</label>
+                                    <p class="setting_tip">仅用于直播姬中每个场景使用独立网页来源的情况。OBS 使用“添加现有源”时不要开启。开启后，控制页会显示“播放源切换”面板。</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>直播姬自动切换</td>
+                                <td colspan="2">
+                                    <label class="setting_check"><input id="multiSceneAutoSwitchEnabled" type="checkbox">根据心跳自动切换到当前场景</label>
+                                    <span id="multiSceneSettingsStatus" class="setting_tip" data-state="saved">已保存</span>
+                                    <p class="setting_tip">只有启用多场景播放源切换后才可用。判断不明确时不会抢占，仍可手动切换。</p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>自动切换阈值</td>
+                                <td>
+                                    <select id="multiSceneHeartbeatThresholdMs">
+                                        <option value="4000">4 秒</option>
+                                        <option value="5000">5 秒（推荐）</option>
+                                        <option value="6000">6 秒</option>
+                                        <option value="8000">8 秒</option>
+                                    </select>
+                                </td>
+                                <td>旧场景心跳超过此时间才允许自动判断</td>
+                            </tr>
+                            <tr>
                                 <td colspan="3" class="customCssCell">
                                     <label for="customOverlayCss">自定义 CSS</label>
                                     <textarea id="customOverlayCss" rows="8" spellcheck="false"
@@ -417,9 +462,9 @@
                     <div class="setting_about_page">
                         <p><strong>Damuku_music</strong></p>
                         <p>为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐</p>
-                        <p>版本：DEV 0.1.2_fix1</p>
+                        <p>版本：DEV 0.1.3</p>
                         <hr>
-                        <p>开源地址：<a href="https://github.com/xiaoyulejia/Damuku_music" target="_blank">GitHub</a></p>
+                        <p>开源地址：<a href="https://github.com/xiaoyulejia/Danmuku_music" target="_blank">GitHub</a></p>
                         <p>作者主页：<a href="https://github.com/xiaoyulejia" target="_blank">小娱乐家</a></p>
                         <p>感谢项目：<a href="https://github.com/xiaoan-1/bilibili-ordersong-plugin" target="_blank">GitHub</a></p>
                         <hr>

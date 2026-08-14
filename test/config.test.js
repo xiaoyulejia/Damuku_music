@@ -4,7 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { resolvePort, loadRuntimeConfig } = require('../src/config');
-const { LocalStore } = require('../src/services/local-store');
+const { LocalStore, mergeSettings } = require('../src/services/local-store');
 
 test('uses default port when values are missing', () => {
     assert.strictEqual(resolvePort(undefined), 8000);
@@ -48,4 +48,23 @@ test('local store keeps validated settings and credentials separate', () => {
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+});
+
+test('multi-scene auto settings default safely and clamp the heartbeat threshold', () => {
+    const defaults = mergeSettings().display;
+    assert.strictEqual(defaults.multiSceneHandoffEnabled, false);
+    assert.strictEqual(defaults.multiSceneAutoSwitchEnabled, false);
+    assert.strictEqual(defaults.multiSceneHeartbeatThresholdMs, 5000);
+    const clamped = mergeSettings({ display: {
+        multiSceneHandoffEnabled: true,
+        multiSceneAutoSwitchEnabled: true,
+        multiSceneHeartbeatThresholdMs: 99999
+    } }).display;
+    assert.strictEqual(clamped.multiSceneAutoSwitchEnabled, true);
+    assert.strictEqual(clamped.multiSceneHeartbeatThresholdMs, 8000);
+    const disabled = mergeSettings({ display: {
+        multiSceneHandoffEnabled: false,
+        multiSceneAutoSwitchEnabled: true
+    } }).display;
+    assert.strictEqual(disabled.multiSceneAutoSwitchEnabled, false);
 });

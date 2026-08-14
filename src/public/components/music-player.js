@@ -1,7 +1,7 @@
 import orderConfiger from "./order-configer.js?v=20260810-41";
 import publicMethod from "../utils/common.js?v=20260810-41";
 import musicServer from "../services/musicServers/music-server.js?v=20260812-22";
-import lyricService from "../services/lyric-service.js?v=20260812-1";
+import lyricService from "../services/lyric-service.js?v=20260815-2";
 
 /**
  * 音乐播放器
@@ -60,9 +60,27 @@ class MusicPlayer {
     handledCommandIds = new Set();
     volumePercent = 50;
     publisherId = '';
+    publisherInstanceId = '';
+    publisherGeneration = 0;
+    publisherLeaseToken = '';
+    remotePublisher = null;
+    remoteLyricsRevision = 0;
+    remoteLyricsContentHash = '';
     publisherStartedAt = Date.now();
     publisherRetryTimer = null;
     publisherClaiming = false;
+    handoffVisible = true;
+    manualHandoffEnabled = false;
+    autoSwitchEnabled = false;
+    heartbeatThresholdMs = 5000;
+    manualHandoffSettingsReady = false;
+    activationId = '';
+    controlClientId = '';
+    candidateTimer = null;
+    candidateHeartbeatInFlight = false;
+    pendingHandoffSwitchId = '';
+    pendingHandoffDeadline = 0;
+    pendingHandoffTimer = null;
     requestedPublisher = false;
     credentialsPushTimer = null;
     lastPublisherHeartbeatAt = 0;
@@ -92,8 +110,21 @@ class MusicPlayer {
         this.isMirrorMode = !this.getPageLiveMode();
         this.requestedPublisher = !this.isMirrorMode;
         const roomId = this.getPageRoomId() || 'default';
+        this.controlClientId = `control-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        this.handoffVisible = document.visibilityState !== 'hidden';
         if (!this.isMirrorMode) {
             this.publisherId = `publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            this.publisherInstanceId = this.getPageInstanceId() || `page-${Math.random().toString(36).slice(2)}`;
+            const activationKey = `bilibili-order-song:handoff:${roomId}:${this.publisherInstanceId}:activation`;
+            try {
+                this.activationId = sessionStorage.getItem(activationKey) || '';
+                if (!this.activationId) {
+                    this.activationId = `activation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                    sessionStorage.setItem(activationKey, this.activationId);
+                }
+            } catch (_) {
+                this.activationId = `activation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            }
             this.publisherStartedAt = Date.now();
         }
         this.volumePercent = 50;
@@ -111,8 +142,15 @@ class MusicPlayer {
             this.currentLyricIndex = -2;
             this.renderLyricsAt(this.getPlaybackPositionMs());
             this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
+            this.updateManualHandoffSetting();
         });
         document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
+        window.addEventListener('pagehide', () => { this.releaseCandidate('pagehide'); this.releasePublisher('pagehide'); });
+        // 直播姬/宿主如果能主动通知来源显隐，可通过该事件避免依赖 Chromium 的
+        // visibilitychange/pagehide（不同版本对隐藏 WebView 的触发并不一致）。
+        window.addEventListener('bilibili-source-visibility', event => {
+            this.handleSourceVisibility(event.detail?.visible !== false);
+        });
         window.addEventListener('bilibili-ordersong-settings-changed', event => {
             if (!this.isMirrorMode) {
                 // 播放端租约确认前，禁止本地旧配置抢先覆盖服务端房间状态。
@@ -419,6 +457,61 @@ class MusicPlayer {
         this.setLyricsState(loading ? 'loading' : 'hidden');
     }
 
+    async fetchSharedLyricsSnapshot(key) {
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId || !key) return null;
+        try {
+            const response = await fetch(`${apiBase}/live/sync-lyrics?room_id=${encodeURIComponent(roomId)}&song_key=${encodeURIComponent(key)}`, { cache: 'no-store' });
+            const result = await response.json();
+            return result.code === 0 ? result.data : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    async publishSharedLyricsSnapshot(key, result) {
+        if (this.isMirrorMode || !this.publisherClaimed || !result || !key) return;
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return;
+        const lines = Array.isArray(result.lines) ? result.lines : [];
+        const original = lines.map(line => ({
+            startMs: Math.max(0, Number(line.timeMs) || 0),
+            endMs: Math.max(0, Number(line.endMs) || 0),
+            text: String(line.text || '')
+        }));
+        const translation = lines.filter(line => line.translation).map(line => ({
+            startMs: Math.max(0, Number(line.timeMs) || 0),
+            text: String(line.translation || '')
+        }));
+        try {
+            const response = await fetch(`${apiBase}/live/sync-lyrics`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomId,
+                    publisherId: this.publisherId,
+                    instanceId: this.publisherInstanceId,
+                    generation: this.publisherGeneration,
+                    leaseToken: this.publisherLeaseToken,
+                    songKey: key,
+                    lyrics: {
+                        original,
+                        translation,
+                        noLyrics: Boolean(result.noLyrics),
+                        parserVersion: 1
+                    }
+                })
+            });
+            const payload = await response.json().catch(() => null);
+            if (payload?.data) {
+                this.remoteLyricsRevision = Number(payload.data.revision) || this.remoteLyricsRevision;
+                this.remoteLyricsContentHash = String(payload.data.contentHash || '');
+            }
+        } catch (_) { }
+    }
+
     async loadLyricsForSong(song) {
         const requestId = ++this.lyricRequestId;
         this.lyricAbortController?.abort();
@@ -431,7 +524,29 @@ class MusicPlayer {
             return;
         }
         try {
-            const result = await lyricService.load(song, { signal: this.lyricAbortController?.signal });
+            let result = await this.fetchSharedLyricsSnapshot(key);
+            if (result?.lyrics) {
+                this.remoteLyricsRevision = Number(result.revision) || this.remoteLyricsRevision;
+                this.remoteLyricsContentHash = String(result.contentHash || this.remoteLyricsContentHash || '');
+                const shared = result.lyrics;
+                const translations = Array.isArray(shared.translation) ? shared.translation : [];
+                const findTranslation = line => translations
+                    .map(item => ({ item, distance: Math.abs((Number(item.startMs) || 0) - (Number(line.startMs) || 0)) }))
+                    .sort((a, b) => a.distance - b.distance)[0]?.item;
+                result = {
+                    status: shared.noLyrics ? 'empty' : 'ready',
+                    noLyrics: Boolean(shared.noLyrics),
+                    lines: (shared.original || []).map(line => ({
+                        timeMs: Number(line.startMs) || 0,
+                        endMs: Number(line.endMs) || 0,
+                        text: String(line.text || ''),
+                        translation: String(findTranslation(line)?.text || '')
+                    }))
+                };
+            } else {
+                result = await lyricService.load(song, { signal: this.lyricAbortController?.signal });
+                this.publishSharedLyricsSnapshot(key, result);
+            }
             if (requestId !== this.lyricRequestId || this.songKey() !== key) return;
             this.lyricLines = Array.isArray(result.lines) ? result.lines : [];
             this.currentLyricIndex = -2;
@@ -543,15 +658,26 @@ class MusicPlayer {
 
     async handleVisibilityChange() {
         if (document.visibilityState === 'hidden') {
-            // 只降低 UI 刷新频率，不暂停/重播/重建真实音频链路。
+            this.handoffVisible = false;
+            if (this.isManualSceneHandoffEnabled()) { this.stopCandidateHeartbeat(); this.releaseCandidate('visibility-hidden'); }
             this.stopProgressAnimation();
-            if (!this.isMirrorMode && this.publisherClaimed) this.publishState();
+            if (!this.isMirrorMode && this.publisherClaimed && this.isManualSceneHandoffEnabled()) {
+                await this.releasePublisher('scene-hidden');
+            } else if (!this.isMirrorMode && this.publisherClaimed) {
+                this.publishState();
+            }
             return;
         }
 
+        this.handoffVisible = true;
+        this.startCandidateHeartbeat();
         this.renderPlaybackProgress(this.getPlaybackPositionMs(), this.getPlaybackDurationMs());
         this.renderLyricsAt(this.getPlaybackPositionMs());
         this.syncLyricMarqueePosition(this.getPlaybackPositionMs());
+        if (this.isManualSceneHandoffEnabled() && this.requestedPublisher && this.isMirrorMode) {
+            await this.tryReclaimPublisher(this.pendingHandoffSwitchId);
+            if (this.isMirrorMode) this.startPublisherRetry();
+        }
         if (this.isMirrorMode) {
             await this.pullSharedState();
             return;
@@ -563,9 +689,26 @@ class MusicPlayer {
             this.becomeMirrorMode(canonical, 'publisher-locked');
             return;
         }
-        // 恢复显示只验证租约并重绘本地媒体位置，不用服务端位置反向 seek。
         this.publishState();
         if (!this.audio.paused) this.startProgressAnimation();
+    }
+
+    async handleSourceVisibility(visible) {
+        if (!this.isManualSceneHandoffEnabled() || !this.requestedPublisher) return;
+        if (!visible) {
+            this.handoffVisible = false;
+            this.stopCandidateHeartbeat();
+            this.releaseCandidate('source-hidden');
+            this.stopProgressAnimation();
+            if (!this.isMirrorMode && this.publisherClaimed) await this.releasePublisher('source-hidden');
+            return;
+        }
+        this.handoffVisible = true;
+        this.startCandidateHeartbeat();
+        if (this.requestedPublisher && this.isMirrorMode) {
+            await this.tryReclaimPublisher(this.pendingHandoffSwitchId);
+            if (this.isMirrorMode) this.startPublisherRetry();
+        }
     }
 
     describeAudioUrl(url) {
@@ -612,6 +755,8 @@ class MusicPlayer {
     async initStateSync() {
         const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
         if (new URLSearchParams(query).get('settings') === '1') return;
+        await this.waitForManualHandoffSettings();
+        this.startCandidateHeartbeat();
         if (typeof BroadcastChannel === 'function') {
             this.stateChannel = new BroadcastChannel(`bilibili-ordersong-state:${this.getPageRoomId() || 'default'}`);
             this.stateChannel.onmessage = event => this.handleStateMessage(event.data);
@@ -653,7 +798,70 @@ class MusicPlayer {
         }
     }
 
-    async claimPublisher() {
+    releaseCandidate(reason = 'release') {
+        if (!this.activationId || !this.isSceneHandoff()) return false;
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return false;
+        const body = JSON.stringify({ room_id: roomId, instanceId: this.publisherInstanceId, activationId: this.activationId, reason });
+        try {
+            if (typeof navigator.sendBeacon === 'function' && navigator.sendBeacon(`${apiBase}/live/sync-candidate-release`, new Blob([body], { type: 'application/json' }))) return true;
+            fetch(`${apiBase}/live/sync-candidate-release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {});
+            return true;
+        } catch (_) { return false; }
+    }
+
+    async releasePublisher(reason = 'scene-hidden') {
+        if (!this.isManualSceneHandoffEnabled() || this.isMirrorMode || !this.publisherClaimed || !this.publisherLeaseToken) return false;
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return false;
+        const wasPaused = Boolean(this.audio.paused);
+        const wasSeeking = Boolean(this.audio.seeking);
+        const playback = {
+            songKey: this.songKey(),
+            positionMs: Math.max(0, Math.round((Number(this.audio.currentTime) || 0) * 1000)),
+            durationMs: this.getPlaybackDurationMs(),
+            paused: wasPaused,
+            seeking: wasSeeking,
+            sampledAt: Date.now()
+        };
+        this.audio.pause();
+        this.publisherClaimed = false;
+        this.isMirrorMode = true;
+        this.handoffVisible = false;
+        if (this.stateTimer) clearInterval(this.stateTimer);
+        if (this.commandPollTimer) clearInterval(this.commandPollTimer);
+        this.stateTimer = null;
+        this.commandPollTimer = null;
+        this.startMirrorSync();
+        const body = JSON.stringify({
+            room_id: roomId,
+            publisherId: this.publisherId,
+            instanceId: this.publisherInstanceId,
+            generation: this.publisherGeneration,
+            leaseToken: this.publisherLeaseToken,
+            reason,
+            playback
+        });
+        try {
+            if (typeof navigator.sendBeacon === 'function') {
+                const accepted = navigator.sendBeacon(`${apiBase}/live/sync-release`, new Blob([body], { type: 'application/json' }));
+                if (accepted) return true;
+            }
+            await fetch(`${apiBase}/live/sync-release`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body,
+                keepalive: true
+            });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    async claimPublisher(switchId = '') {
         const apiBase = this.getSyncApiBase();
         const roomId = this.getPageRoomId();
         if (!apiBase || !roomId) return { claimed: true };
@@ -661,15 +869,31 @@ class MusicPlayer {
             const response = await fetch(`${apiBase}/live/sync-claim`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ room_id: roomId, publisherId: this.publisherId }),
+                body: JSON.stringify({
+                    room_id: roomId,
+                    publisherId: this.publisherId,
+                    instanceId: this.publisherInstanceId,
+                    generation: this.publisherGeneration,
+                    leaseToken: this.publisherLeaseToken,
+                    activationId: this.activationId,
+                    ...(switchId ? { switchId } : {})
+                }),
                 cache: 'no-store'
             });
             const result = await response.json();
+            const claimedState = result.data || null;
+            const claimedPublisher = claimedState?.publisher || {};
+            if (result.claimed && claimedState) {
+                this.publisherGeneration = Number(result.generation ?? claimedPublisher.generation ?? claimedState.publisherGeneration) || 0;
+                this.publisherLeaseToken = String(result.leaseToken || claimedPublisher.leaseToken || claimedState.publisherLeaseToken || '');
+            }
             this.debugLog('播放端租约结果', {
                 claimed: result.claimed,
                 ignored: result.ignored,
                 reason: result.reason,
-                publisherId: result.data?.publisherId
+                publisherId: result.data?.publisherId,
+                generation: this.publisherGeneration,
+                switchId
             });
             return {
                 claimed: result.code === 0 && result.claimed !== false,
@@ -711,14 +935,46 @@ class MusicPlayer {
 
     startPublisherRetry() {
         if (!this.requestedPublisher || this.publisherRetryTimer) return;
-        this.publisherRetryTimer = setInterval(() => this.tryReclaimPublisher(), 3000);
+        if (this.isManualSceneHandoffEnabled()) {
+            if (this.pendingHandoffSwitchId && !this.pendingHandoffTimer) this.schedulePendingHandoffRetry();
+            return;
+        }
+        this.publisherRetryTimer = setInterval(() => this.tryReclaimPublisher(), this.isSceneHandoff() ? 500 : 3000);
     }
 
-    async tryReclaimPublisher() {
+    setPendingHandoff(switchId, deadline = 0) {
+        if (!switchId) return;
+        this.pendingHandoffSwitchId = String(switchId);
+        this.pendingHandoffDeadline = Number(deadline) || Date.now() + 5000;
+        this.schedulePendingHandoffRetry();
+    }
+
+    clearPendingHandoff() {
+        this.pendingHandoffSwitchId = '';
+        this.pendingHandoffDeadline = 0;
+        if (this.pendingHandoffTimer) clearTimeout(this.pendingHandoffTimer);
+        this.pendingHandoffTimer = null;
+    }
+
+    schedulePendingHandoffRetry() {
+        if (this.pendingHandoffTimer || !this.pendingHandoffSwitchId) return;
+        if (this.pendingHandoffDeadline && Date.now() >= this.pendingHandoffDeadline) { this.clearPendingHandoff(); return; }
+        this.pendingHandoffTimer = setTimeout(async () => {
+            this.pendingHandoffTimer = null;
+            await this.tryReclaimPublisher(this.pendingHandoffSwitchId);
+            if (this.pendingHandoffSwitchId) this.schedulePendingHandoffRetry();
+        }, 500);
+    }
+
+    async tryReclaimPublisher(switchId = '') {
         if (!this.requestedPublisher || !this.isMirrorMode || this.publisherClaiming) return;
+        const effectiveSwitchId = switchId || this.pendingHandoffSwitchId;
+        if (effectiveSwitchId) this.setPendingHandoff(effectiveSwitchId, this.pendingHandoffDeadline);
+        if (this.isManualSceneHandoffEnabled() && !this.handoffVisible && !effectiveSwitchId) return;
+        if (this.isManualSceneHandoffEnabled() && !effectiveSwitchId) return;
         this.publisherClaiming = true;
         try {
-            const claimResult = await this.claimPublisher();
+            const claimResult = await this.claimPublisher(effectiveSwitchId);
             if (!claimResult.claimed || claimResult.unavailable) return;
 
             this.isMirrorMode = false;
@@ -740,6 +996,7 @@ class MusicPlayer {
             this.commandPollTimer = setInterval(() => this.pullSharedCommands(), 500);
             this.debugLog('已重新抢回 OBS 播放端租约', { publisherId: this.publisherId });
             window.dispatchEvent(new CustomEvent('bilibili-ordersong-publisher-claimed'));
+            this.clearPendingHandoff();
             clearInterval(this.publisherRetryTimer);
             this.publisherRetryTimer = null;
         } finally {
@@ -854,6 +1111,11 @@ class MusicPlayer {
                 this.handledCommandIds.delete(this.handledCommandIds.values().next().value);
             }
         }
+        if (message.command === 'revokePublisher') {
+            if (message.targetPublisherId && message.targetPublisherId !== this.publisherId) return;
+            await this.revokePublisherLocally(message.switchId || message.value?.switchId || '', Number(message.generation));
+            return;
+        }
         let canonicalState = message.state || null;
         if (!canonicalState || (message.stateRevision &&
             Number(canonicalState.stateRevision || 0) < Number(message.stateRevision))) {
@@ -905,12 +1167,94 @@ class MusicPlayer {
         const audioSourceFailed = Boolean(this.audio.error) || this.audio.networkState === 3;
         const sameSong = this.loadedAudioSongId === this.songKey(song) && Boolean(this.audio.src) && !audioSourceFailed;
         if (!sameSong) {
-            await this.play(song, state?.currentRequester || '');
+            await this.play(song, state?.currentRequester || '', {
+                playback: state?.playback,
+                resume: reason === 'publisher-start' || reason === 'publisher-reclaim'
+            });
             return;
         }
-        if (reason === 'toggle' || reason === 'play') {
+        if ((reason === 'publisher-start' || reason === 'publisher-reclaim') && state?.playback) {
+            await this.restorePlaybackPosition(state.playback, song);
+            if (state.playback.paused || state.playback.seeking) {
+                this.audio.pause();
+                this.publishState();
+                return;
+            }
+            await this.playAudioWithFallback('publisher-resume');
+        } else if (reason === 'toggle' || reason === 'play') {
             if (this.audio.paused) await this.unlockPlayback();
         }
+    }
+
+    async revokePublisherLocally(switchId, generation) {
+        const wasPaused = Boolean(this.audio.paused);
+        const playback = {
+            songKey: this.songKey(),
+            positionMs: Math.max(0, Math.round((Number(this.audio.currentTime) || 0) * 1000)),
+            durationMs: this.getPlaybackDurationMs(),
+            paused: wasPaused,
+            seeking: Boolean(this.audio.seeking),
+            sampledAt: Date.now()
+        };
+        this.audio.pause();
+        this.audio.removeAttribute('src');
+        this.loadedAudioSongId = '';
+        this.publisherClaimed = false;
+        this.isMirrorMode = true;
+        this.stopProgressAnimation();
+        if (this.stateTimer) clearInterval(this.stateTimer);
+        if (this.commandPollTimer) clearInterval(this.commandPollTimer);
+        this.stateTimer = null;
+        this.commandPollTimer = null;
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return;
+        try {
+            await fetch(`${apiBase}/live/sync-revoke-ack`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomId,
+                    switchId,
+                    publisherId: this.publisherId,
+                    generation: Number.isFinite(generation) ? generation : this.publisherGeneration,
+                    playback
+                }),
+                keepalive: true
+            });
+        } catch (_) { }
+        this.startMirrorSync();
+        this.debugLog('已按切换指令停止旧播放端', { switchId, generation, wasPaused });
+    }
+
+    async restorePlaybackPosition(playback, song) {
+        if (!playback || playback.songKey !== this.songKey(song)) return 0;
+        if (this.audio.readyState < 1 && typeof this.audio.addEventListener === 'function') {
+            await new Promise(resolve => {
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    this.audio.removeEventListener('loadedmetadata', finish);
+                    this.audio.removeEventListener('loadeddata', finish);
+                    resolve();
+                };
+                this.audio.addEventListener('loadedmetadata', finish, { once: true });
+                this.audio.addEventListener('loadeddata', finish, { once: true });
+                setTimeout(finish, 1200);
+            });
+        }
+        let positionMs = Math.max(0, Number(playback.positionMs) || 0);
+        if (!playback.paused && !playback.seeking && Number.isFinite(Number(playback.sampledAt))) {
+            positionMs += Math.max(0, Date.now() - Number(playback.sampledAt));
+        }
+        const durationMs = Number(this.audio.duration) > 0
+            ? Number(this.audio.duration) * 1000
+            : (Number(playback.durationMs) || Number(song?.duration || 0) * 1000);
+        if (durationMs > 0) positionMs = Math.min(positionMs, durationMs);
+        try { this.audio.currentTime = positionMs / 1000; } catch (_) { }
+        this.renderPlaybackProgress(positionMs, durationMs);
+        return positionMs;
     }
 
     publishState() {
@@ -952,12 +1296,29 @@ class MusicPlayer {
                 readyState: this.audio.readyState,
                 sampledAt: Date.now()
             },
+            lyrics: {
+                songKey: this.songKey(),
+                status: this.lyricLines.length ? 'ready' : 'unknown',
+                revision: Number(this.remoteLyricsRevision) || 0,
+                contentHash: this.remoteLyricsContentHash || ''
+            },
             queueRevision: this.lastQueueRevision,
             settings: {
                 order: window.__orderSettingsState || window.__lastSharedSettings?.order || null,
                 login: window.__loginSettingsState || window.__lastSharedSettings?.login || null
             },
             publisherId: this.publisherId,
+            publisherInstanceId: this.publisherInstanceId,
+            publisherGeneration: this.publisherGeneration,
+            publisherLeaseToken: this.publisherLeaseToken,
+            publisher: {
+                publisherId: this.publisherId,
+                instanceId: this.publisherInstanceId,
+                generation: this.publisherGeneration,
+                leaseToken: this.publisherLeaseToken,
+                status: 'active',
+                heartbeatAt: Date.now()
+            },
             publisherStartedAt: this.publisherStartedAt,
             updatedAt: Date.now()
         };
@@ -974,18 +1335,26 @@ class MusicPlayer {
             const response = await fetch(`${apiBase}/live/sync-state`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ room_id: roomId, state })
+                body: JSON.stringify({
+                    room_id: roomId,
+                    state,
+                    publisherId: this.publisherId,
+                    instanceId: this.publisherInstanceId,
+                    generation: this.publisherGeneration,
+                    leaseToken: this.publisherLeaseToken
+                })
             });
             const result = await response.json();
             this.debugLog('播放状态同步响应', {
                 ignored: result.ignored,
                 reason: result.reason,
-                publisherId: result.data?.publisherId
+                publisherId: result.data?.publisherId,
+                generation: this.publisherGeneration
             });
             if (response.ok && result.code === 0 && !result.ignored) {
                 this.lastPublisherHeartbeatAt = Number(result.data?.publisherHeartbeatAt) || Date.now();
             }
-            if (result.ignored && result.reason === 'publisher-locked') {
+            if (result.ignored && ['publisher-locked', 'stale-publisher', 'fenced', 'publisher-expired', 'publisher-released'].includes(result.reason)) {
                 this.becomeMirrorMode(result.data, result.reason);
             }
         } catch (_) {
@@ -1012,7 +1381,11 @@ class MusicPlayer {
             const response = await fetch(`${apiBase}/live/sync-command`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ room_id: roomId, command })
+                body: JSON.stringify({
+                    room_id: roomId,
+                    controllerId: this.controlClientId,
+                    command
+                })
             });
             const result = await response.json().catch(() => null);
             const ok = response.ok && result?.code === 0;
@@ -1081,6 +1454,134 @@ class MusicPlayer {
         if (output) output.textContent = `${this.volumePercent}%`;
     }
 
+    getPageInstanceId() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        const value = new URLSearchParams(query).get('instance');
+        const normalized = String(value || '').trim();
+        return /^[A-Za-z0-9._-]{1,64}$/.test(normalized) ? normalized : '';
+    }
+
+    isSceneHandoff() {
+        const query = window.location.search.replace(/^\?/, '').replace(/\?/g, '&');
+        return ['scene', '1', 'true', 'yes', 'on'].includes((new URLSearchParams(query).get('handoff') || '').toLowerCase());
+    }
+
+    isManualSceneHandoffEnabled() {
+        return this.manualHandoffSettingsReady && this.manualHandoffEnabled === true &&
+            this.getPageRole() === 'obs' && this.isSceneHandoff() &&
+            Boolean(this.getPageInstanceId()) && !this.isLyricOverlay() && !this.isMirrorOnlyPage();
+    }
+
+    isMirrorOnlyPage() {
+        return ['control', 'monitor', 'preview'].includes(this.getPageRole()) || this.isLyricOverlay() || this.getPageLiveMode() === false;
+    }
+
+    async waitForManualHandoffSettings() {
+        if (!this.isSceneHandoff()) {
+            this.manualHandoffSettingsReady = true;
+            return false;
+        }
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) {
+            this.manualHandoffSettingsReady = true;
+            return false;
+        }
+        try {
+            const response = await fetch(`${apiBase}/live/settings?room_id=${encodeURIComponent(roomId)}`, { cache: 'no-store' });
+            const result = await response.json();
+            const incomingRevision = Number(result.data?.revision || 0);
+            const currentRevision = Number(window.__displaySettingsRevision || 0);
+            const incomingGlobalRevision = Number(result.data?.globalRevision || 0);
+            const currentGlobalRevision = Number(window.__displaySettingsGlobalRevision || 0);
+            const incomingRoomRevision = Number(result.data?.roomRevision || 0);
+            const currentRoomRevision = Number(window.__displaySettingsRoomRevision || 0);
+            if (result.code === 0 && (incomingRevision < currentRevision || incomingGlobalRevision < currentGlobalRevision || incomingRoomRevision < currentRoomRevision)) {
+                this.manualHandoffSettingsReady = true;
+                return this.manualHandoffEnabled;
+            }
+            const enabled = result.code === 0 && result.data?.display?.multiSceneHandoffEnabled === true;
+            this.manualHandoffEnabled = enabled;
+            this.autoSwitchEnabled = result.code === 0 && result.data?.display?.multiSceneAutoSwitchEnabled === true;
+            this.heartbeatThresholdMs = Number(result.data?.display?.multiSceneHeartbeatThresholdMs) || 5000;
+            this.manualHandoffSettingsReady = true;
+            if (result.code === 0) {
+                window.__displaySettings = { ...(window.__displaySettings || {}), ...(result.data?.display || {}) };
+                window.__displaySettingsRevision = incomingRevision;
+                window.__displaySettingsGlobalRevision = incomingGlobalRevision;
+                window.__displaySettingsRoomRevision = incomingRoomRevision;
+            }
+            return enabled;
+        } catch (_) {
+            this.manualHandoffEnabled = false;
+            this.manualHandoffSettingsReady = true;
+            return false;
+        }
+    }
+
+    updateManualHandoffSetting() {
+        const enabled = window.__displaySettings?.multiSceneHandoffEnabled === true;
+        const autoSwitchEnabled = window.__displaySettings?.multiSceneAutoSwitchEnabled === true;
+        const heartbeatThresholdMs = Number(window.__displaySettings?.multiSceneHeartbeatThresholdMs) || 5000;
+        const wasEnabled = this.manualHandoffEnabled;
+        this.manualHandoffEnabled = enabled;
+        this.autoSwitchEnabled = autoSwitchEnabled && enabled;
+        this.heartbeatThresholdMs = Math.max(4000, Math.min(8000, heartbeatThresholdMs));
+        this.manualHandoffSettingsReady = true;
+        if (!enabled) {
+            this.stopCandidateHeartbeat();
+        } else if (!wasEnabled && this.isManualSceneHandoffEnabled()) {
+            this.startCandidateHeartbeat();
+        }
+        window.dispatchEvent(new CustomEvent('bilibili-multi-scene-setting-changed', {
+            detail: { enabled, autoSwitchEnabled: this.autoSwitchEnabled, heartbeatThresholdMs: this.heartbeatThresholdMs }
+        }));
+    }
+
+    startCandidateHeartbeat() {
+        if (!this.isManualSceneHandoffEnabled() || this.candidateTimer) return;
+        this.sendCandidateHeartbeat();
+        this.candidateTimer = setInterval(() => this.sendCandidateHeartbeat(), 2000);
+    }
+
+    stopCandidateHeartbeat() {
+        if (this.candidateTimer) clearInterval(this.candidateTimer);
+        this.candidateTimer = null;
+    }
+
+    async sendCandidateHeartbeat() {
+        if (!this.isManualSceneHandoffEnabled() || this.candidateHeartbeatInFlight) return;
+        const apiBase = this.getSyncApiBase();
+        const roomId = this.getPageRoomId();
+        if (!apiBase || !roomId) return;
+        this.candidateHeartbeatInFlight = true;
+        try {
+            const response = await fetch(`${apiBase}/live/sync-candidate`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomId,
+                    instanceId: this.getPageInstanceId(),
+                    publisherId: this.publisherId,
+                    activationId: this.activationId,
+                    heartbeatSequence: Date.now(),
+                    role: 'obs',
+                    source: 'obs',
+                    handoff: 'scene'
+                }),
+                cache: 'no-store'
+            });
+            const result = await response.json().catch(() => null);
+            if (result?.handoff?.state === 'target-pending' && result.handoff?.switchId && result.handoff?.targetInstanceId === this.getPageInstanceId()) {
+                this.setPendingHandoff(result.handoff.switchId, result.handoff.deadline);
+                await this.tryReclaimPublisher(result.handoff.switchId);
+            }
+        } catch (_) { }
+        finally {
+            this.candidateHeartbeatInFlight = false;
+        }
+    }
+
     sendCommand(command, value) {
         const message = {
             type: 'command',
@@ -1113,6 +1614,15 @@ class MusicPlayer {
             : [];
         this.currentSong = state.currentSong || this.orderList[0]?.song || null;
         this.currentRequester = state.currentRequester || this.orderList[0]?.uname || '';
+        this.remotePublisher = state.publisher && typeof state.publisher === 'object'
+            ? state.publisher
+            : {
+                publisherId: state.publisherId || '',
+                instanceId: state.publisherInstanceId || '',
+                generation: Number(state.publisherGeneration) || 0,
+                leaseToken: state.publisherLeaseToken || '',
+                status: state.publisherId ? 'active' : 'released'
+            };
         const previousSongKey = this.remotePlayback?.songKey || this.lyricSongKey;
         this.remotePlayback = state.playback && typeof state.playback === 'object' ? state.playback : null;
         this.remotePlaybackReceivedAt = Date.now();
@@ -1120,7 +1630,10 @@ class MusicPlayer {
             this.lastSeekSubmittedValue != null && Date.now() - this.lastSeekSubmittedAt > 250) {
             this.lastSeekSubmittedValue = null;
         }
-        if (previousSongKey !== this.songKey()) {
+        const previousLyricsRevision = Number(this.remoteLyricsRevision || 0);
+        const nextLyricsRevision = Number(state.lyrics?.revision || 0);
+        this.remoteLyricsRevision = nextLyricsRevision;
+        if (previousSongKey !== this.songKey() || previousLyricsRevision !== nextLyricsRevision) {
             this.seekPreviewUntil = 0;
             this.progressDragging = false;
             this.renderPlaybackProgress(0, 0, { interactive: false });
@@ -1337,7 +1850,7 @@ class MusicPlayer {
     }
 
     // 播放歌曲
-    async play(song, requester = '') {
+    async play(song, requester = '', options = {}) {
         const requestId = ++this.playbackRequestId;
         clearTimeout(this.errorNextTimer);
         this.errorNextTimer = null;
@@ -1355,7 +1868,7 @@ class MusicPlayer {
         this.currentSong = song;
         this.currentRequester = requester;
         this.updateNowPlaying(song, requester);
-        this.publishState();
+        if (!options.resume) this.publishState();
         this.debugLog('开始播放歌曲', {
             platform: song?.platform,
             songId: song?.sid,
@@ -1429,13 +1942,21 @@ class MusicPlayer {
         this.autoSkipCount = 0;
         this.loadedAudioSongId = this.songKey(song);
         this.loadLyricsForSong(song);
-        this.renderPlaybackProgress(0, Math.max(0, Number(song.duration || 0) * 1000));
+        const restoredPositionMs = options.resume ? await this.restorePlaybackPosition(options.playback, song) : 0;
+        this.renderPlaybackProgress(restoredPositionMs, Math.max(0, Number(song.duration || 0) * 1000));
         this.debugLog('已设置 audio.src', {
             src: this.describeAudioUrl(songurl),
             muted: this.audio.muted,
             volume: this.audio.volume
         });
 
+        if (options.resume && (options.playback?.paused || options.playback?.seeking)) {
+            this.audio.pause();
+            this.publishState();
+            this.isSwitching = false;
+            this._flushPending();
+            return;
+        }
         // 播放；如果浏览器拦截有声自动播放，先静音启动，再恢复声音。
         const played = await this.playAudioWithFallback('new-song');
         if (requestId !== this.playbackRequestId || this.isMirrorMode) {

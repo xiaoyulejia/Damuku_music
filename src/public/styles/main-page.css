@@ -416,6 +416,13 @@ body.lyricOverlay .playerCard {
     backdrop-filter: none;
 }
 
+/* [hidden] must remain authoritative even when a page-mode rule styles cards. */
+[hidden],
+body.lyricOverlay #sceneHandoffPanel,
+body.lyricOverlay .playerCard[hidden] {
+    display: none !important;
+}
+
 body.lyricOverlay .cardTitle,
 body.lyricOverlay .nowPlaying,
 body.lyricOverlay .playbackProgress,
@@ -796,6 +803,27 @@ body.overlayLight .emptyQueue {
     overflow: hidden;
     text-overflow:ellipsis;
     animation: show 7s forwards ease-in-out;
+}
+
+.sceneHandoffPanel {
+    margin-top: 14px;
+}
+
+.sceneHandoffControls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.sceneHandoffControls select {
+    min-width: 150px;
+    flex: 1 1 180px;
+}
+
+.sceneHandoffCandidates {
+    margin-top: 10px;
+    line-height: 1.5;
 }
 /* 这个动画真的好丝滑，看着最舒服的一集 */
 @keyframes show {

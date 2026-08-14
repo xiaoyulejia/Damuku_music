@@ -25,11 +25,23 @@ const sharedOrderStates = new Map();
 const sharedOrderCommands = new Map();
 // 网易云 Cookie 只在当前 Node 进程内存中短暂转发，不写入状态文件或日志。
 const sharedRuntimeCredentials = new Map();
+const sharedLyricsSnapshots = new Map();
+const sharedCandidates = new Map();
+const sharedRoomLocks = new Map();
+const sharedAutoSwitchStates = new Map();
+const sharedAutoSwitchInFlight = new Map();
 const localStore = new LocalStore(path.resolve(__dirname, '../..'));
 let sharedOrderCommandSeq = 0;
 // OBS 最小化后，内置 Chromium 可能把页面定时器延迟数秒甚至更久。
 // 5 秒租约会把仍在播放的 OBS 误判为离线，导致播放端被重新接管。
 const SYNC_PUBLISHER_LEASE_MS = 60 * 1000;
+const SYNC_CANDIDATE_TTL_MS = 8 * 1000;
+const SYNC_HANDOFF_DEADLINE_MS = 5 * 1000;
+const SYNC_AUTO_TARGET_FRESH_MS = 3 * 1000;
+const SYNC_AUTO_LEADING_GAP_MS = 2 * 1000;
+const SYNC_AUTO_STABLE_ROUNDS = 2;
+const MAX_SCENE_CANDIDATES = 32;
+const INSTANCE_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 const sharedSyncDir = localStore.cacheDir;
 fs.mkdirSync(sharedSyncDir, { recursive: true });
 const MAX_COMMAND_LOG_ENTRIES = 1000;
@@ -39,6 +51,16 @@ const MAX_QUEUE_REORDER_ITEMS = 5000;
 
 function syncFilePath(prefix, roomId) {
     return path.join(sharedSyncDir, `${prefix}-${String(roomId).replace(/[^0-9a-z_-]/gi, '_')}.json`);
+}
+
+function lyricsFilePath(roomId, songKeyValue) {
+    const safeRoom = String(roomId).replace(/[^0-9a-z_-]/gi, '_');
+    const safeSong = String(songKeyValue || 'unknown').replace(/[^0-9a-z_.-]/gi, '_');
+    return path.join(sharedSyncDir, `lyrics-${safeRoom}-${safeSong}.json`);
+}
+
+function createLeaseToken() {
+    return crypto.randomBytes(24).toString('base64url');
 }
 
 function commandLogPath(roomId) {
@@ -110,6 +132,13 @@ function defaultRoomState() {
             readyState: 0,
             sampledAt: 0
         },
+        lyrics: {
+            songKey: '',
+            status: 'unknown',
+            revision: 0,
+            contentHash: '',
+            updatedAt: 0
+        },
         songListId: '',
         idleSongList: [],
         idleIndex: -1,
@@ -120,8 +149,20 @@ function defaultRoomState() {
         commandResult: null,
         lastSongListRequestId: '',
         publisherId: null,
+        publisher: {
+            publisherId: null,
+            instanceId: '',
+            generation: 0,
+            leaseToken: '',
+            status: 'released',
+            heartbeatAt: 0
+        },
+        publisherGeneration: 0,
+        publisherLeaseToken: '',
+        publisherInstanceId: '',
         publisherStartedAt: 0,
         publisherHeartbeatAt: 0,
+        handoff: null,
         updatedAt: 0,
         stateRevision: 0,
         queueRevision: 0
@@ -163,7 +204,7 @@ function normalizePlayback(playback, currentSong) {
         songKey: sameSong ? expectedKey : '',
         positionMs: sameSong ? positionMs : 0,
         durationMs: sameSong ? durationMs : 0,
-        paused: Boolean(playback?.paused),
+        paused: playback?.paused == null ? true : Boolean(playback.paused),
         seeking: Boolean(playback?.seeking),
         readyState: finiteClamp(playback?.readyState, 0, 4),
         sampledAt: finiteClamp(playback?.sampledAt, 0, Date.now() + 60_000)
@@ -198,12 +239,26 @@ function normalizeRoomState(input = {}) {
         : [];
     const idleSongList = normalizeIdleSongList(input.idleSongList);
     const currentSong = normalizeSong(input.currentSong) || queue[0]?.song || null;
+    const sourcePublisher = input.publisher && typeof input.publisher === 'object' ? input.publisher : {};
+    const publisherId = String(sourcePublisher.publisherId || input.publisherId || '').trim();
+    const generation = Math.max(0, Number(sourcePublisher.generation ?? input.publisherGeneration) || 0);
+    const leaseToken = String(sourcePublisher.leaseToken || input.publisherLeaseToken || '');
+    const heartbeatAt = Number(sourcePublisher.heartbeatAt || input.publisherHeartbeatAt || 0) || 0;
     return {
         ...defaults,
         ...input,
         queue,
         currentSong,
         playback: normalizePlayback(input.playback, currentSong),
+        lyrics: {
+            ...defaults.lyrics,
+            ...(input.lyrics && typeof input.lyrics === 'object' ? input.lyrics : {}),
+            songKey: String(input.lyrics?.songKey || ''),
+            status: String(input.lyrics?.status || 'unknown'),
+            revision: Math.max(0, Number(input.lyrics?.revision) || 0),
+            contentHash: String(input.lyrics?.contentHash || ''),
+            updatedAt: Number(input.lyrics?.updatedAt) || 0
+        },
         currentRequester: String(input.currentRequester || queue[0]?.uname || ''),
         status: String(input.status || (currentSong ? '等待播放' : '等待点歌')),
         volume: Math.max(0, Math.min(100, input.volume == null ? defaults.volume : Number(input.volume) || 0)),
@@ -232,8 +287,301 @@ function normalizeRoomState(input = {}) {
                 : null
         },
         commandResult: input.commandResult || null,
-        lastSongListRequestId: String(input.lastSongListRequestId || '')
+        lastSongListRequestId: String(input.lastSongListRequestId || ''),
+        publisherId,
+        publisher: {
+            publisherId,
+            instanceId: String(sourcePublisher.instanceId || input.publisherInstanceId || ''),
+            generation,
+            leaseToken,
+            status: String(sourcePublisher.status || (publisherId ? 'active' : 'released')),
+            heartbeatAt
+        },
+        publisherGeneration: generation,
+        publisherLeaseToken: leaseToken,
+        publisherInstanceId: String(sourcePublisher.instanceId || input.publisherInstanceId || ''),
+        handoff: normalizeHandoff(input)
     };
+}
+
+function candidateFilePath(roomId) {
+    return syncFilePath('candidates', roomId);
+}
+
+function handoffEnabled(roomId) {
+    return localStore.getSettings(null).display.multiSceneHandoffEnabled === true;
+}
+
+function trustedLocalOrigin(req) {
+    const origin = req.get('origin');
+    if (!origin) return true;
+    try {
+        const hostname = new URL(origin).hostname.toLowerCase();
+        const requestHost = String(req.hostname || '').toLowerCase();
+        const loopback = new Set(['localhost', '127.0.0.1', '::1']);
+        return hostname === requestHost || (loopback.has(hostname) && loopback.has(requestHost));
+    } catch (_) {
+        return false;
+    }
+}
+
+function readCandidates(roomId) {
+    const stored = readSyncFile(candidateFilePath(roomId), sharedCandidates.get(roomId) || {});
+    const source = stored && typeof stored === 'object' ? stored : {};
+    const cutoff = Date.now() - SYNC_CANDIDATE_TTL_MS;
+    const candidates = {};
+    let changed = false;
+    Object.keys(source).forEach(instanceId => {
+        const original = source[instanceId];
+        const rawActivations = Array.isArray(original?.activations)
+            ? original.activations
+            : [original];
+        const activations = rawActivations
+            .filter(item => item && INSTANCE_ID_PATTERN.test(String(item.instanceId || instanceId)) &&
+                String(item.activationId || '').trim() && Number(item.lastSeenAt) >= cutoff)
+            .map(item => ({
+                instanceId: String(item.instanceId || instanceId),
+                publisherId: String(item.publisherId || '').trim(),
+                activationId: String(item.activationId || '').trim(),
+                role: 'obs',
+                handoff: 'scene',
+                lastSeenAt: Number(item.lastSeenAt) || 0,
+                firstSeenAt: Number(item.firstSeenAt) || Number(item.lastSeenAt) || 0,
+                heartbeatCount: Math.max(0, Number(item.heartbeatCount) || 0),
+                heartbeatCountSinceSuperseded: Math.max(0, Number(item.heartbeatCountSinceSuperseded) || Number(item.heartbeatCount) || 0),
+                lastHeartbeatSequence: Number(item.lastHeartbeatSequence) || 0,
+                supersededAt: Number(item.supersededAt) || 0,
+                supersededBy: String(item.supersededBy || ''),
+                status: 'candidate'
+            }));
+        if (!activations.length) {
+            changed = true;
+            return;
+        }
+        const latest = activations.slice().sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+        const freshActivationCount = activations.filter(item => Date.now() - Number(item.lastSeenAt || 0) <= SYNC_AUTO_TARGET_FRESH_MS).length;
+        const conflict = hasConcurrentActivations(activations);
+        candidates[instanceId] = {
+            ...latest,
+            activations,
+            conflict,
+            reloading: activations.length > 1 && !conflict,
+            activationCount: activations.length,
+            freshActivationCount
+        };
+        if (!Array.isArray(original?.activations) || original.activationCount !== activations.length ||
+            original.freshActivationCount !== freshActivationCount || Boolean(original.conflict) !== conflict ||
+            Boolean(original.reloading) !== (activations.length > 1 && !conflict)) {
+            changed = true;
+        }
+    });
+    sharedCandidates.set(roomId, candidates);
+    if (changed) writeSyncFile(candidateFilePath(roomId), candidates);
+    return candidates;
+}
+
+function writeCandidates(roomId, candidates) {
+    sharedCandidates.set(roomId, candidates);
+    writeSyncFile(candidateFilePath(roomId), candidates);
+    return candidates;
+}
+
+function clearCandidates(roomId) {
+    sharedCandidates.delete(roomId);
+    try { fs.unlinkSync(candidateFilePath(roomId)); } catch (_) { /* already absent */ }
+}
+
+function candidateIsOnline(candidate) {
+    return Boolean(candidate && Date.now() - Number(candidate.lastSeenAt || 0) <= SYNC_CANDIDATE_TTL_MS);
+}
+
+function candidateHasActivation(candidate, activationId) {
+    const id = String(activationId || '').trim();
+    if (!id || !candidate) return false;
+    if (Array.isArray(candidate.activations)) return candidate.activations.some(item => item.activationId === id && candidateIsOnline(item));
+    return candidate.activationId === id && candidateIsOnline(candidate);
+}
+
+function getCandidateActivation(candidate, activationId = '') {
+    if (!candidate) return null;
+    const id = String(activationId || '').trim();
+    if (id && Array.isArray(candidate.activations)) {
+        return candidate.activations.find(item => item.activationId === id) || null;
+    }
+    return candidate;
+}
+
+function candidateIsConflicted(candidate) {
+    return Boolean(candidate?.conflict);
+}
+
+function hasConcurrentActivations(activations) {
+    const now = Date.now();
+    const fresh = (activations || []).filter(item => item && now - Number(item.lastSeenAt || 0) <= SYNC_AUTO_TARGET_FRESH_MS);
+    for (let i = 0; i < fresh.length; i += 1) {
+        for (let j = i + 1; j < fresh.length; j += 1) {
+            const a = fresh[i];
+            const b = fresh[j];
+            if (Number(a.heartbeatCountSinceSuperseded || 0) < 2 || Number(b.heartbeatCountSinceSuperseded || 0) < 2) continue;
+            if (a.supersededAt && Number(a.lastSeenAt) <= Number(a.supersededAt)) continue;
+            if (b.supersededAt && Number(b.lastSeenAt) <= Number(b.supersededAt)) continue;
+            if (Number(a.lastSeenAt) >= Number(b.firstSeenAt || 0) && Number(b.lastSeenAt) >= Number(a.firstSeenAt || 0)) return true;
+        }
+    }
+    return false;
+}
+
+function autoSwitchSettings() {
+    const display = localStore.getSettings(null).display || {};
+    return {
+        enabled: display.multiSceneHandoffEnabled === true,
+        autoEnabled: display.multiSceneAutoSwitchEnabled === true,
+        thresholdMs: Math.max(4000, Math.min(8000, Number(display.multiSceneHeartbeatThresholdMs) || 5000))
+    };
+}
+
+function evaluateAutoSwitch(roomId, state, candidates) {
+    const config = autoSwitchSettings();
+    const previous = sharedAutoSwitchStates.get(roomId) || {};
+    if (['completed', 'failed'].includes(previous.state) && Number(previous.completedAt || previous.failedAt || 0) + 5000 > Date.now()) {
+        return previous;
+    }
+    if (!config.enabled || !config.autoEnabled) {
+        const disabled = { state: config.enabled ? 'disabled' : 'disabled', reason: config.enabled ? 'auto-switch-disabled' : 'scene-handoff-disabled', thresholdMs: config.thresholdMs, stableRounds: 0 };
+        sharedAutoSwitchStates.set(roomId, disabled);
+        return disabled;
+    }
+    const now = Date.now();
+    const current = currentPublisherInfo(state);
+    const handoff = normalizeHandoff(state);
+    const currentPublisherAgeMs = current.heartbeatAt ? Math.max(0, now - current.heartbeatAt) : Number.MAX_SAFE_INTEGER;
+    const currentCandidate = candidates[current.instanceId];
+    const previousPublisherAgeMs = currentCandidate?.lastSeenAt
+        ? Math.max(currentPublisherAgeMs, now - Number(currentCandidate.lastSeenAt))
+        : currentPublisherAgeMs;
+    const publisherUnavailable = current.status === 'released' || !current.publisherId || previousPublisherAgeMs > config.thresholdMs;
+    const freshCandidates = Object.values(candidates)
+        .filter(candidate => candidateIsOnline(candidate) && !candidateIsConflicted(candidate))
+        .map(candidate => ({ ...candidate, heartbeatAgeMs: Math.max(0, now - Number(candidate.lastSeenAt || 0)) }))
+        .filter(candidate => candidate.heartbeatAgeMs <= SYNC_AUTO_TARGET_FRESH_MS)
+        .sort((a, b) => a.heartbeatAgeMs - b.heartbeatAgeMs || String(a.instanceId).localeCompare(String(b.instanceId)));
+    const eligibleTargets = freshCandidates.filter(candidate => candidate.instanceId !== current.instanceId);
+    // 旧 publisher 已明确 release/过期后，其残留 candidate 不应继续阻挡唯一新目标。
+    const comparisonCandidates = publisherUnavailable
+        ? freshCandidates.filter(candidate => candidate.instanceId !== current.instanceId)
+        : freshCandidates;
+    let next = {
+        enabled: true,
+        state: 'waiting',
+        reason: publisherUnavailable ? 'waiting-for-unique-fresh-candidate' : 'current-publisher-active',
+        thresholdMs: config.thresholdMs,
+        winnerAgeMs: freshCandidates[0]?.heartbeatAgeMs ?? null,
+        previousPublisherAgeMs: Number.isFinite(previousPublisherAgeMs) ? previousPublisherAgeMs : null,
+        stableRounds: 0
+    };
+    if (!publisherUnavailable) {
+        sharedAutoSwitchStates.set(roomId, next);
+        return next;
+    }
+    if (eligibleTargets.length !== 1) {
+        next.state = eligibleTargets.length > 1 ? 'ambiguous' : 'waiting';
+        next.reason = eligibleTargets.length > 1 ? 'multiple-fresh-candidates' : 'no-unique-fresh-candidate';
+        next.stableRounds = 0;
+        sharedAutoSwitchStates.set(roomId, next);
+        return next;
+    }
+    const winner = eligibleTargets[0];
+    const second = comparisonCandidates.find(candidate => candidate.instanceId !== winner.instanceId);
+    const leadMs = second ? Math.max(0, second.heartbeatAgeMs - winner.heartbeatAgeMs) : Number.MAX_SAFE_INTEGER;
+    const sameWinner = previous.targetInstanceId === winner.instanceId && previous.targetActivationId === winner.activationId;
+    const stableRounds = sameWinner ? Number(previous.stableRounds || 0) + 1 : 1;
+    next.targetInstanceId = winner.instanceId;
+    next.targetActivationId = winner.activationId;
+    next.winnerAgeMs = winner.heartbeatAgeMs;
+    next.leadMs = leadMs;
+    next.stableRounds = stableRounds;
+    if (leadMs < SYNC_AUTO_LEADING_GAP_MS || stableRounds < SYNC_AUTO_STABLE_ROUNDS) {
+        next.reason = leadMs < SYNC_AUTO_LEADING_GAP_MS ? 'insufficient-heartbeat-lead' : 'stabilizing-winner';
+        sharedAutoSwitchStates.set(roomId, next);
+        return next;
+    }
+    if (handoff && ['revoke-pending', 'target-pending'].includes(handoff.state)) {
+        next.state = 'switching';
+        next.reason = 'switch-in-progress';
+        sharedAutoSwitchStates.set(roomId, next);
+        return next;
+    }
+    next.state = 'switching';
+    next.reason = 'heartbeat-threshold-reached';
+    next.shouldSwitch = true;
+    next.switchId = `auto-${String(roomId).replace(/[^0-9a-z_-]/gi, '_')}-${winner.activationId}`.slice(0, 200);
+    sharedAutoSwitchStates.set(roomId, next);
+    return next;
+}
+
+async function evaluateAndRequestAutoSwitchLocked(roomId, state, candidates) {
+    const autoSwitch = evaluateAutoSwitch(roomId, state, candidates);
+    if (!autoSwitch.shouldSwitch || sharedAutoSwitchInFlight.has(roomId)) return autoSwitch;
+    sharedAutoSwitchInFlight.set(roomId, autoSwitch.switchId);
+    const current = currentPublisherInfo(state);
+    const target = candidates[autoSwitch.targetInstanceId];
+    console.info('[AUTO_TARGET_SELECTED]', { roomId, switchId: autoSwitch.switchId, targetInstanceId: autoSwitch.targetInstanceId, targetActivationId: target?.activationId || '', generation: current.generation });
+    try {
+        const result = await requestSceneSwitchLocked(roomId, {
+            targetInstanceId: autoSwitch.targetInstanceId,
+            targetActivationId: target?.activationId || '',
+            switchId: autoSwitch.switchId,
+            expectedGeneration: current.generation,
+            expectedInstanceId: current.instanceId,
+            automatic: true
+        });
+        const latest = { ...(sharedAutoSwitchStates.get(roomId) || autoSwitch), targetInstanceId: autoSwitch.targetInstanceId, targetActivationId: target?.activationId || '', switchId: autoSwitch.switchId };
+        latest.state = result.status === 200 ? 'switching' : 'failed';
+        latest.reason = result.status === 200 ? 'target-awaiting-claim' : (result.body?.reason || 'auto-switch-failed');
+        latest.accepted = result.status === 200;
+        sharedAutoSwitchStates.set(roomId, latest);
+        console.info(result.status === 200 ? '[AUTO_SWITCH_ACCEPTED]' : '[AUTO_TARGET_NOTIFIED]', { roomId, switchId: autoSwitch.switchId, targetInstanceId: autoSwitch.targetInstanceId, targetActivationId: target?.activationId || '', handoffState: result.body?.result?.state || '' });
+        return latest;
+    } catch (error) {
+        const failed = { ...(sharedAutoSwitchStates.get(roomId) || autoSwitch), state: 'failed', reason: error?.message || 'auto-switch-failed', switchId: autoSwitch.switchId };
+        sharedAutoSwitchStates.set(roomId, failed);
+        return failed;
+    } finally {
+        sharedAutoSwitchInFlight.delete(roomId);
+    }
+}
+
+function withRoomLock(roomId, task) {
+    const previous = sharedRoomLocks.get(roomId) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    sharedRoomLocks.set(roomId, current);
+    return previous.then(async () => {
+        const lockPath = syncFilePath('room-lock', roomId);
+        let lockHandle = null;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+            try {
+                lockHandle = fs.openSync(lockPath, 'wx');
+                break;
+            } catch (error) {
+                if (error.code !== 'EEXIST') throw error;
+                try {
+                    if (Date.now() - fs.statSync(lockPath).mtimeMs > 15_000) fs.unlinkSync(lockPath);
+                } catch (_) { /* another process may own or remove it */ }
+                await new Promise(resolve => setTimeout(resolve, 10));
+            }
+        }
+        if (lockHandle == null) throw new Error('room-lock-timeout');
+        try {
+            return await task();
+        } finally {
+            try { fs.closeSync(lockHandle); } catch (_) { }
+            try { fs.unlinkSync(lockPath); } catch (_) { }
+        }
+    }).finally(() => {
+        release();
+        if (sharedRoomLocks.get(roomId) === current) sharedRoomLocks.delete(roomId);
+    });
 }
 
 function readRoomState(roomId) {
@@ -277,6 +625,143 @@ function persistRoomState(roomId, state, { bumpRevision = true, bumpQueueRevisio
     writeSyncFile(syncFilePath('state', roomId), nextState);
     sharedOrderStates.set(roomId, nextState);
     return nextState;
+}
+
+function currentPublisherInfo(state) {
+    const publisher = state?.publisher && typeof state.publisher === 'object' ? state.publisher : {};
+    return {
+        publisherId: String(publisher.publisherId || state?.publisherId || ''),
+        instanceId: String(publisher.instanceId || state?.publisherInstanceId || ''),
+        generation: Math.max(0, Number(publisher.generation ?? state?.publisherGeneration) || 0),
+        leaseToken: String(publisher.leaseToken || state?.publisherLeaseToken || ''),
+        status: String(publisher.status || (state?.publisherId ? 'active' : 'released')),
+        heartbeatAt: Number(publisher.heartbeatAt || state?.publisherHeartbeatAt || state?.updatedAt || 0) || 0
+    };
+}
+
+function requestPublisherInfo(body = {}, command = null) {
+    const source = body.publisher && typeof body.publisher === 'object'
+        ? body.publisher
+        : (command && command.publisher && typeof command.publisher === 'object' ? command.publisher : body);
+    return {
+        publisherId: String(source.publisherId || command?.publisherId || '').trim(),
+        instanceId: String(source.instanceId || source.publisherInstanceId || command?.instanceId || '').trim(),
+        generation: source.generation == null && source.publisherGeneration == null
+            ? null
+            : Number(source.generation ?? source.publisherGeneration),
+        leaseToken: String(source.leaseToken || source.publisherLeaseToken || command?.leaseToken || '')
+    };
+}
+
+function publisherAuthResult(state, incoming, { allowLegacy = true } = {}) {
+    const current = currentPublisherInfo(state);
+    const active = Boolean(current.publisherId && current.status === 'active' &&
+        Date.now() - current.heartbeatAt < SYNC_PUBLISHER_LEASE_MS);
+    if (!incoming.publisherId && allowLegacy) return { ok: true, legacy: true, active, current };
+    if (!incoming.publisherId || !current.publisherId || incoming.publisherId !== current.publisherId) {
+        return { ok: false, reason: active ? 'publisher-locked' : 'publisher-required', current, active };
+    }
+    if (incoming.generation != null && (!Number.isFinite(incoming.generation) || incoming.generation !== current.generation)) {
+        return { ok: false, reason: 'stale-publisher', current, active };
+    }
+    if (incoming.leaseToken && incoming.leaseToken !== current.leaseToken) {
+        return { ok: false, reason: 'fenced', current, active };
+    }
+    if (current.status === 'released') return { ok: false, reason: 'publisher-released', current, active };
+    if (!active && current.status !== 'released') return { ok: false, reason: 'publisher-expired', current, active };
+    return { ok: true, legacy: incoming.generation == null && !incoming.leaseToken, active, current };
+}
+
+function normalizeLyricsPayload(lyrics) {
+    const source = lyrics && typeof lyrics === 'object' ? lyrics : {};
+    const normalizeLines = value => Array.isArray(value) ? value.slice(0, 20000).map(line => ({
+        startMs: Math.max(0, Number(line?.startMs ?? line?.timeMs) || 0),
+        endMs: Math.max(0, Number(line?.endMs) || 0),
+        text: String(line?.text || ''),
+        ...(line?.translation ? { translation: String(line.translation) } : {})
+    })) : [];
+    return {
+        original: normalizeLines(source.original || source.lines),
+        translation: normalizeLines(source.translation),
+        romanized: normalizeLines(source.romanized || source.romanization),
+        noLyrics: Boolean(source.noLyrics),
+        parserVersion: Math.max(1, Number(source.parserVersion) || 1)
+    };
+}
+
+function readLyricsSnapshot(roomId, key) {
+    const cacheKey = `${roomId}:${key}`;
+    const stored = readSyncFile(lyricsFilePath(roomId, key), null);
+    const snapshot = stored || sharedLyricsSnapshots.get(cacheKey) || null;
+    if (snapshot) sharedLyricsSnapshots.set(cacheKey, snapshot);
+    return snapshot;
+}
+
+function appendHandoffCommand(roomId, command) {
+    const filePath = commandLogPath(roomId);
+    const list = sharedOrderCommands.get(roomId) || readCommandLog(filePath);
+    const lastSequence = list.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
+    const next = {
+        ...command,
+        type: 'command',
+        id: command.id || `handoff-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+        sequence: Math.max(sharedOrderCommandSeq, lastSequence) + 1,
+        createdAt: Date.now()
+    };
+    sharedOrderCommandSeq = next.sequence;
+    const logEntry = {
+        sequence: next.sequence,
+        id: next.id,
+        command: next.command,
+        switchId: next.switchId || '',
+        targetInstanceId: next.targetInstanceId || '',
+        targetPublisherId: next.targetPublisherId || '',
+        generation: next.generation,
+        createdAt: next.createdAt
+    };
+    const retained = appendCommandLog(filePath, logEntry, list);
+    sharedOrderCommands.set(roomId, retained);
+    return next;
+}
+
+function normalizeHandoff(state) {
+    if (!state?.handoff || typeof state.handoff !== 'object') return null;
+    const value = state.handoff;
+    return {
+        switchId: String(value.switchId || ''),
+        targetInstanceId: String(value.targetInstanceId || ''),
+        targetActivationId: String(value.targetActivationId || ''),
+        expectedGeneration: Number(value.expectedGeneration) || 0,
+        expectedInstanceId: String(value.expectedInstanceId || ''),
+        state: String(value.state || 'idle'),
+        deadline: Number(value.deadline) || 0,
+        createdAt: Number(value.createdAt) || 0,
+        revokeAckAt: Number(value.revokeAckAt) || 0,
+        result: value.result && typeof value.result === 'object' ? value.result : null,
+        oldPublisher: value.oldPublisher && typeof value.oldPublisher === 'object' ? value.oldPublisher : null,
+        automatic: value.automatic === true
+    };
+}
+
+function expireHandoff(roomId, state) {
+    const handoff = normalizeHandoff(state);
+    if (!handoff || !['revoke-pending', 'target-pending'].includes(handoff.state) || !handoff.deadline || Date.now() <= handoff.deadline) {
+        return state;
+    }
+    handoff.state = 'failed';
+    handoff.result = {
+        accepted: false,
+        switchId: handoff.switchId,
+        state: 'failed',
+        reason: 'target-timeout'
+    };
+    const persisted = persistRoomState(roomId, { ...state, handoff });
+    if (handoff.automatic) {
+        const previous = sharedAutoSwitchStates.get(roomId) || {};
+        sharedAutoSwitchStates.set(roomId, { ...previous, state: 'failed', switchId: handoff.switchId, targetInstanceId: handoff.targetInstanceId, targetActivationId: handoff.targetActivationId, reason: 'target-timeout', failedAt: Date.now() });
+        console.warn('[AUTO_SWITCH_TIMEOUT]', { roomId, switchId: handoff.switchId, targetInstanceId: handoff.targetInstanceId, targetActivationId: handoff.targetActivationId, handoffState: handoff.state });
+    }
+    return persisted;
 }
 
 function appendNextIdleSong(state) {
@@ -698,6 +1183,7 @@ router.put('/live/settings', (req, res) => {
     if (!savedRoom.ok || !savedGlobal.ok) {
         return res.status(409).json({ code: -1, message: '设置版本已更新', data: current.settings });
     }
+    if (savedGlobal.settings.display.multiSceneHandoffEnabled !== true) clearCandidates(roomId);
     const next = {
         ...current,
         settings: {
@@ -749,6 +1235,239 @@ router.delete('/live/sync-credentials', (req, res) => {
     res.json({ code: 0, data: { hasNeteaseCookie: false } });
 });
 
+router.post('/live/sync-candidate', async (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    if (!handoffEnabled(roomId)) {
+        clearCandidates(roomId);
+        return res.status(409).json({ code: -1, enabled: false, reason: 'scene-handoff-disabled' });
+    }
+    const instanceId = String(req.body?.instanceId || '').trim();
+    const publisherId = String(req.body?.publisherId || '').trim();
+    const activationId = String(req.body?.activationId || '').trim();
+    if (!INSTANCE_ID_PATTERN.test(instanceId) || !publisherId || !activationId ||
+        req.body?.role !== 'obs' || (req.body?.source && req.body.source !== 'obs') || req.body?.handoff !== 'scene') {
+        return res.status(400).json({ code: -1, reason: 'invalid-scene-candidate' });
+    }
+    const result = await withRoomLock(roomId, async () => {
+        const candidates = readCandidates(roomId);
+        if (!candidates[instanceId] && Object.keys(candidates).length >= MAX_SCENE_CANDIDATES) {
+            return { status: 409, body: { code: -1, enabled: true, reason: 'candidate-capacity-exceeded', maxCandidates: MAX_SCENE_CANDIDATES } };
+        }
+        const now = Date.now();
+        const existing = candidates[instanceId] || {};
+        const activations = Array.isArray(existing.activations)
+            ? existing.activations.filter(item => candidateIsOnline(item))
+            : (existing.activationId && candidateIsOnline(existing) ? [existing] : []);
+        const index = activations.findIndex(item => item.activationId === activationId);
+        const previousActivation = index >= 0 ? activations[index] : null;
+        if (index < 0) {
+            activations.forEach(item => {
+                if (item.activationId !== activationId && !item.supersededAt) {
+                    item.supersededAt = now;
+                    item.supersededBy = activationId;
+                }
+            });
+        }
+        const nextActivation = {
+            ...(previousActivation || {}),
+            instanceId, publisherId, activationId, role: 'obs', handoff: 'scene', lastSeenAt: now,
+            firstSeenAt: Number(previousActivation?.firstSeenAt) || now,
+            heartbeatCount: Math.max(0, Number(previousActivation?.heartbeatCount) || 0) + 1,
+            heartbeatCountSinceSuperseded: previousActivation?.supersededAt && Number(previousActivation.lastSeenAt) <= Number(previousActivation.supersededAt)
+                ? 1
+                : Math.max(0, Number(previousActivation?.heartbeatCountSinceSuperseded) || 0) + 1,
+            lastHeartbeatSequence: Number(req.body?.heartbeatSequence) || Math.max(0, Number(previousActivation?.lastHeartbeatSequence) || 0) + 1,
+            status: 'candidate'
+        };
+        if (index >= 0) activations[index] = nextActivation;
+        else activations.push(nextActivation);
+        const latest = activations.slice().sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+        const freshActivationCount = activations.filter(item => Date.now() - Number(item.lastSeenAt || 0) <= SYNC_AUTO_TARGET_FRESH_MS).length;
+        const conflict = hasConcurrentActivations(activations);
+        candidates[instanceId] = {
+            ...latest,
+            activations,
+            conflict,
+            reloading: activations.length > 1 && !conflict,
+            activationCount: activations.length,
+            freshActivationCount
+        };
+        writeCandidates(roomId, candidates);
+        let state = expireHandoff(roomId, readRoomState(roomId));
+        const autoSwitch = await evaluateAndRequestAutoSwitchLocked(roomId, state, candidates);
+        state = readRoomState(roomId);
+        const current = currentPublisherInfo(state);
+        const handoff = normalizeHandoff(state);
+        const activationRequested = Boolean(handoff && handoff.state === 'target-pending' &&
+            handoff.targetInstanceId === instanceId && Date.now() < handoff.deadline &&
+            candidateHasActivation(candidates[instanceId], handoff.targetActivationId || candidates[instanceId]?.activationId) &&
+            (!candidateIsConflicted(candidates[instanceId]) || handoff.targetActivationId === activationId));
+        return {
+            status: 200,
+            body: {
+                code: 0,
+                enabled: true,
+                data: candidates[instanceId],
+                activationRequested,
+                switchId: activationRequested ? handoff.switchId : '',
+                handoff,
+                publisher: current,
+                autoSwitch
+            }
+        };
+    });
+    res.status(result.status).json(result.body);
+});
+
+router.post('/live/sync-candidate-release', async (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    if (!trustedLocalOrigin(req)) return res.status(403).json({ code: -1, reason: 'untrusted-origin' });
+    const instanceId = String(req.body?.instanceId || '').trim();
+    const activationId = String(req.body?.activationId || '').trim();
+    if (!INSTANCE_ID_PATTERN.test(instanceId) || !activationId) return res.status(400).json({ code: -1, reason: 'invalid-scene-candidate' });
+    const result = await withRoomLock(roomId, () => {
+        const candidates = readCandidates(roomId);
+        const candidate = candidates[instanceId];
+        if (!candidate) return { removed: false, candidates };
+        const activations = (Array.isArray(candidate.activations) ? candidate.activations : [candidate]).filter(item => item.activationId !== activationId);
+        if (!activations.length) delete candidates[instanceId];
+        else {
+            const latest = activations.slice().sort((a, b) => b.lastSeenAt - a.lastSeenAt)[0];
+            const conflict = hasConcurrentActivations(activations);
+            candidates[instanceId] = { ...latest, activations, conflict, reloading: activations.length > 1 && !conflict, activationCount: activations.length, freshActivationCount: activations.filter(item => Date.now() - Number(item.lastSeenAt || 0) <= SYNC_AUTO_TARGET_FRESH_MS).length };
+        }
+        writeCandidates(roomId, candidates);
+        return { removed: true, candidates };
+    });
+    res.json({ code: 0, ...result });
+});
+
+router.get('/live/sync-candidates', async (req, res) => {
+    const roomId = String(req.query.room_id || req.query.roomid || 'default');
+    if (!handoffEnabled(roomId)) {
+        clearCandidates(roomId);
+        sharedAutoSwitchStates.set(roomId, { state: 'disabled', reason: 'scene-handoff-disabled', thresholdMs: 5000, stableRounds: 0 });
+        return res.json({ code: 0, enabled: false, data: [], handoff: normalizeHandoff(readRoomState(roomId)), autoSwitch: sharedAutoSwitchStates.get(roomId) });
+    }
+    const candidates = readCandidates(roomId);
+    const state = expireHandoff(roomId, readRoomState(roomId));
+    const current = currentPublisherInfo(state);
+    const list = Object.values(candidates).filter(candidateIsOnline).map(candidate => ({
+        ...candidate,
+        isPublisher: candidate.publisherId === current.publisherId && current.status === 'active',
+        heartbeatAgeMs: Math.max(0, Date.now() - Number(candidate.lastSeenAt || 0)),
+        generation: candidate.publisherId === current.publisherId ? current.generation : 0,
+        currentSong: state.currentSong,
+        playback: state.playback
+    }));
+    const autoSwitch = evaluateAutoSwitch(roomId, state, candidates);
+    res.json({ code: 0, enabled: true, data: list, handoff: normalizeHandoff(state), publisher: current, autoSwitch });
+});
+
+async function requestSceneSwitchLocked(roomId, request = {}) {
+        if (!handoffEnabled(roomId)) return { status: 409, body: { code: -1, reason: 'scene-handoff-disabled' } };
+        const targetInstanceId = String(request.targetInstanceId || '').trim();
+        const targetActivationId = String(request.targetActivationId || '').trim();
+        const switchId = String(request.switchId || '').trim();
+        if (!INSTANCE_ID_PATTERN.test(targetInstanceId) || !switchId || switchId.length > 200) {
+            return { status: 400, body: { code: -1, reason: 'invalid-switch-request' } };
+        }
+        const state = expireHandoff(roomId, readRoomState(roomId));
+        const existing = normalizeHandoff(state);
+        if (existing?.switchId === switchId && existing.result) {
+            return { status: existing.result.accepted === false ? 409 : 200, body: { code: existing.result.accepted === false ? -1 : 0, data: state, result: existing.result } };
+        }
+        if (existing && ['revoke-pending', 'target-pending'].includes(existing.state)) {
+            return { status: 409, body: { code: -1, data: state, reason: 'switch-in-progress', result: existing } };
+        }
+        const candidates = readCandidates(roomId);
+        const target = candidates[targetInstanceId];
+        if (!candidateIsOnline(target) || target.role !== 'obs' || target.handoff !== 'scene') {
+            return { status: 409, body: { code: -1, data: state, reason: 'target-candidate-offline' } };
+        }
+        const selectedActivation = getCandidateActivation(target, targetActivationId);
+        if (candidateIsConflicted(target) && (!targetActivationId || !selectedActivation || !candidateIsOnline(selectedActivation))) {
+            return { status: 409, body: { code: -1, data: state, reason: 'instance-conflict' } };
+        }
+        const current = currentPublisherInfo(state);
+        const expectedGeneration = Number(request.expectedGeneration);
+        const expectedInstanceId = String(request.expectedInstanceId || '');
+        if ((Number.isFinite(expectedGeneration) && expectedGeneration !== current.generation) ||
+            (expectedInstanceId && expectedInstanceId !== current.instanceId)) {
+            return { status: 409, body: { code: -1, data: state, reason: 'switch-conflict' } };
+        }
+        if (targetInstanceId === current.instanceId) {
+            const noop = { accepted: true, switchId, state: 'completed', targetInstanceId, generation: current.generation };
+            const persisted = persistRoomState(roomId, { ...state, handoff: { switchId, targetInstanceId, state: 'completed', result: noop, createdAt: Date.now() } });
+            return { status: 200, body: { code: 0, data: persisted, result: noop } };
+        }
+        const now = Date.now();
+        const handoff = {
+            switchId,
+            targetInstanceId,
+            targetActivationId: targetActivationId || selectedActivation?.activationId || target.activationId,
+            expectedGeneration: current.generation,
+            expectedInstanceId: current.instanceId,
+            state: 'revoke-pending',
+            deadline: now + SYNC_HANDOFF_DEADLINE_MS,
+            createdAt: now,
+            oldPublisher: current,
+            automatic: request.automatic === true,
+            result: null
+        };
+        persistRoomState(roomId, { ...state, handoff });
+        if (current.publisherId) {
+            appendHandoffCommand(roomId, {
+                command: 'revokePublisher',
+                switchId,
+                targetInstanceId: current.instanceId,
+                targetPublisherId: current.publisherId,
+                generation: current.generation,
+                value: { switchId, generation: current.generation }
+            });
+        }
+        handoff.state = 'target-pending';
+        const pending = persistRoomState(roomId, { ...readRoomState(roomId), handoff });
+        const accepted = { accepted: true, switchId, state: 'target-pending', targetInstanceId, targetActivationId: handoff.targetActivationId, deadline: handoff.deadline, generation: current.generation + 1 };
+        pending.handoff.result = accepted;
+        const finalState = persistRoomState(roomId, pending, { bumpRevision: true });
+        return { status: 200, body: { code: 0, data: finalState, result: accepted } };
+}
+
+async function requestSceneSwitch(roomId, request = {}) {
+    return withRoomLock(roomId, () => requestSceneSwitchLocked(roomId, request));
+}
+
+router.post('/live/sync-switch', async (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    if (!trustedLocalOrigin(req)) return res.status(403).json({ code: -1, reason: 'untrusted-origin' });
+    const result = await requestSceneSwitch(roomId, req.body || {});
+    res.status(result.status).json(result.body);
+});
+
+router.post('/live/sync-revoke-ack', (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    if (!trustedLocalOrigin(req)) return res.status(403).json({ code: -1, reason: 'untrusted-origin' });
+    if (!handoffEnabled(roomId)) return res.status(409).json({ code: -1, reason: 'scene-handoff-disabled' });
+    const state = readRoomState(roomId);
+    const handoff = normalizeHandoff(state);
+    const publisher = currentPublisherInfo(state);
+    const switchId = String(req.body?.switchId || '');
+    const generation = Number(req.body?.generation);
+    const oldPublisher = handoff?.oldPublisher || {};
+    const valid = handoff?.switchId === switchId &&
+        String(req.body?.publisherId || '') === String(oldPublisher.publisherId || publisher.publisherId) &&
+        generation === Number(oldPublisher.generation ?? publisher.generation);
+    if (!valid) return res.status(409).json({ code: -1, data: state, reason: 'stale-publisher' });
+    const nextHandoff = { ...handoff, revokeAckAt: Date.now() };
+    const isStillOldPublisher = publisher.publisherId === oldPublisher.publisherId && publisher.generation === oldPublisher.generation;
+    const nextState = isStillOldPublisher && req.body?.playback && typeof req.body.playback === 'object'
+        ? { ...state, playback: req.body.playback, handoff: nextHandoff }
+        : { ...state, handoff: nextHandoff };
+    const persisted = persistRoomState(roomId, nextState);
+    res.json({ code: 0, data: persisted, acknowledged: true });
+});
+
 // OBS 浏览器源与外部浏览器之间的点歌状态同步
 router.get('/live/sync-state', (req, res) => {
     const roomId = String(req.query.room_id || req.query.roomid || 'default');
@@ -762,34 +1481,94 @@ router.get('/live/sync-state', (req, res) => {
 router.post('/live/sync-claim', (req, res) => {
     const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
     const publisherId = String(req.body?.publisherId || '');
+    const instanceId = String(req.body?.instanceId || '');
+    const switchId = String(req.body?.switchId || '');
+    const activationId = String(req.body?.activationId || '');
     if (!publisherId) {
         return res.status(400).json({ code: -1, message: 'publisherId必须存在' });
     }
+    if (switchId && !handoffEnabled(roomId)) {
+        return res.json({ code: 0, claimed: false, ignored: true, reason: 'scene-handoff-disabled' });
+    }
 
     const current = readRoomState(roomId);
-    const currentPublisherId = String(current?.publisherId || '');
-    const currentHeartbeatAt = Number(current?.publisherHeartbeatAt || current?.updatedAt || 0);
-    const publisherLeaseActive = current && currentPublisherId &&
-        Date.now() - currentHeartbeatAt < SYNC_PUBLISHER_LEASE_MS;
+    const currentPublisher = currentPublisherInfo(current);
+    const currentPublisherId = currentPublisher.publisherId;
+    const publisherLeaseActive = current && currentPublisherId && currentPublisher.status === 'active' &&
+        Date.now() - currentPublisher.heartbeatAt < SYNC_PUBLISHER_LEASE_MS;
 
-    if (publisherLeaseActive && currentPublisherId !== publisherId) {
+    const handoff = normalizeHandoff(current);
+    const candidates = handoffEnabled(roomId) ? readCandidates(roomId) : {};
+    const candidate = candidates[instanceId];
+    const targetActivation = getCandidateActivation(candidate, handoff?.targetActivationId || activationId);
+    const targetClaimAllowed = Boolean(handoff && handoff.state === 'target-pending' &&
+        switchId && handoff.switchId === switchId && handoff.targetInstanceId === instanceId &&
+        Date.now() < handoff.deadline && candidateIsOnline(candidate) &&
+        (!candidateIsConflicted(candidate) || handoff.targetActivationId === activationId) &&
+        targetActivation?.publisherId === publisherId && candidateHasActivation(candidate, handoff.targetActivationId || activationId));
+    if (switchId) console.info('[AUTO_CLAIM_ATTEMPT]', { roomId, switchId, targetInstanceId: instanceId, targetActivationId: activationId, handoffState: handoff?.state || 'none' });
+    if (switchId && !targetClaimAllowed) {
+        console.warn('[AUTO_CLAIM_REJECTED]', { roomId, switchId, targetInstanceId: instanceId, targetActivationId: activationId, reason: 'handoff-target-mismatch', handoffState: handoff?.state || 'none' });
+        return res.json({ code: 0, data: current, claimed: false, ignored: true, reason: 'handoff-target-mismatch' });
+    }
+
+    if (publisherLeaseActive && currentPublisherId !== publisherId && !targetClaimAllowed) {
         return res.json({ code: 0, data: current, claimed: false, ignored: true, reason: 'publisher-locked' });
     }
 
     const now = Date.now();
+    const sameActivePublisher = publisherLeaseActive && currentPublisherId === publisherId && !targetClaimAllowed;
+    const supplied = requestPublisherInfo(req.body);
+    if (sameActivePublisher && supplied.generation != null && supplied.generation !== currentPublisher.generation) {
+        return res.json({ code: 0, data: current, claimed: false, ignored: true, reason: 'stale-publisher' });
+    }
+    if (sameActivePublisher && supplied.leaseToken && supplied.leaseToken !== currentPublisher.leaseToken) {
+        return res.json({ code: 0, data: current, claimed: false, ignored: true, reason: 'fenced' });
+    }
+    if (sameActivePublisher && supplied.generation == null && !supplied.leaseToken) {
+        return res.json({ code: 0, data: current, claimed: false, ignored: true, reason: 'publisher-locked' });
+    }
+    const generation = sameActivePublisher ? currentPublisher.generation : currentPublisher.generation + 1;
+    const leaseToken = sameActivePublisher && supplied.leaseToken === currentPublisher.leaseToken
+        ? currentPublisher.leaseToken
+        : createLeaseToken();
     const nextState = {
         ...current,
         publisherId,
+        publisherInstanceId: instanceId,
+        publisherGeneration: generation,
+        publisherLeaseToken: leaseToken,
+        publisher: {
+            publisherId,
+            instanceId,
+            generation,
+            leaseToken,
+            status: 'active',
+            heartbeatAt: now
+        },
         stateRevision: (Number(current.stateRevision) || 0) + 1,
-        publisherStartedAt: publisherLeaseActive
+        publisherStartedAt: sameActivePublisher
             ? Number(current.publisherStartedAt) || now
             : now,
         publisherHeartbeatAt: now,
-        updatedAt: now
+        updatedAt: now,
+        handoff: targetClaimAllowed
+            ? {
+                ...handoff,
+                state: 'completed',
+                result: { accepted: true, switchId, state: 'completed', targetInstanceId: instanceId, generation }
+            }
+            : current.handoff
     };
+    if (targetClaimAllowed && handoff?.automatic) {
+        const completedAt = Date.now();
+        const previous = sharedAutoSwitchStates.get(roomId) || {};
+        sharedAutoSwitchStates.set(roomId, { ...previous, state: 'completed', reason: 'target-claimed', switchId, targetInstanceId: instanceId, targetActivationId: activationId, generation, completedAt });
+        console.info('[AUTO_CLAIM_COMPLETED]', { roomId, switchId, targetInstanceId: instanceId, targetActivationId: activationId, generation, handoffState: 'completed' });
+    }
     writeSyncFile(syncFilePath('state', roomId), nextState);
     sharedOrderStates.set(roomId, nextState);
-    res.json({ code: 0, data: nextState, claimed: true });
+    res.json({ code: 0, data: nextState, claimed: true, generation, leaseToken, switchId: targetClaimAllowed ? switchId : '' });
 });
 
 router.post('/live/sync-state', (req, res) => {
@@ -800,10 +1579,11 @@ router.post('/live/sync-state', (req, res) => {
     }
     const current = readRoomState(roomId);
     const incomingPublisherId = String(state.publisherId || '');
-    const currentPublisherId = String(current.publisherId || '');
-    const currentHeartbeatAt = Number(current.publisherHeartbeatAt || current.updatedAt || 0);
-    const publisherLeaseActive = currentPublisherId &&
-        Date.now() - currentHeartbeatAt < SYNC_PUBLISHER_LEASE_MS;
+    const currentPublisher = currentPublisherInfo(current);
+    const currentPublisherId = currentPublisher.publisherId;
+    const publisherLeaseActive = currentPublisherId && currentPublisher.status === 'active' &&
+        Date.now() - currentPublisher.heartbeatAt < SYNC_PUBLISHER_LEASE_MS;
+    const auth = publisherAuthResult(current, requestPublisherInfo(state));
 
     // 一个房间只允许当前 OBS 播放页发布状态，避免旧 OBS 页或另一个普通播放页
     // 在切歌期间把控制页覆盖回另一首歌。发布者停止心跳后，新的页面才能接管。
@@ -812,6 +1592,9 @@ router.post('/live/sync-state', (req, res) => {
     }
     if (publisherLeaseActive && currentPublisherId && !incomingPublisherId) {
         return res.json({ code: 0, data: current, ignored: true, reason: 'publisher-required' });
+    }
+    if (incomingPublisherId && !auth.ok && ['stale-publisher', 'fenced', 'publisher-expired', 'publisher-released'].includes(auth.reason)) {
+        return res.status(409).json({ code: -1, data: current, ignored: true, reason: auth.reason });
     }
     // 浏览器只上报播放端遥测，不能再用本地 queue/current/歌单覆盖后端权威状态。
     // 这样控制页、OBS、直播姬内置 WebView 看到的永远是同一份队列。
@@ -829,6 +1612,18 @@ router.post('/live/sync-state', (req, res) => {
             login: state.settings?.login || canonical.settings.login || null
         },
         publisherId: incomingPublisherId || (publisherLeaseActive ? currentPublisherId : canonical.publisherId),
+        publisherInstanceId: String(state.publisherInstanceId || state.publisher?.instanceId || canonical.publisherInstanceId || ''),
+        publisherGeneration: Number(state.publisherGeneration ?? state.publisher?.generation ?? canonical.publisherGeneration) || 0,
+        publisherLeaseToken: String(state.publisherLeaseToken || state.publisher?.leaseToken || canonical.publisherLeaseToken || ''),
+        publisher: {
+            ...(canonical.publisher || {}),
+            publisherId: incomingPublisherId || (publisherLeaseActive ? currentPublisherId : canonical.publisherId),
+            instanceId: String(state.publisherInstanceId || state.publisher?.instanceId || canonical.publisherInstanceId || ''),
+            generation: Number(state.publisherGeneration ?? state.publisher?.generation ?? canonical.publisherGeneration) || 0,
+            leaseToken: String(state.publisherLeaseToken || state.publisher?.leaseToken || canonical.publisherLeaseToken || ''),
+            status: 'active',
+            heartbeatAt: Date.now()
+        },
         publisherStartedAt: Number(state.publisherStartedAt) || canonical.publisherStartedAt || Date.now(),
         publisherHeartbeatAt: Date.now()
     };
@@ -839,12 +1634,69 @@ router.post('/live/sync-state', (req, res) => {
     res.json({ code: 0, data: persisted });
 });
 
+// 场景隐藏/页面卸载时主动交出播放端，保留歌曲、队列和歌词引用。
+router.post('/live/sync-release', (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    const current = readRoomState(roomId);
+    const auth = publisherAuthResult(current, requestPublisherInfo(req.body), { allowLegacy: false });
+    if (!auth.ok) return res.status(409).json({ code: -1, data: current, released: false, reason: auth.reason });
+    const playback = req.body?.playback && typeof req.body.playback === 'object'
+        ? { ...current.playback, ...req.body.playback }
+        : current.playback;
+    const now = Date.now();
+    const next = {
+        ...current,
+        playback,
+        publisher: { ...currentPublisherInfo(current), status: 'released', heartbeatAt: now },
+        publisherHeartbeatAt: now,
+        updatedAt: now,
+        handoff: current.handoff
+    };
+    const persisted = persistRoomState(roomId, next);
+    res.json({ code: 0, data: persisted, released: true });
+});
+
+router.get('/live/sync-lyrics', (req, res) => {
+    const roomId = String(req.query.room_id || req.query.roomid || 'default');
+    const key = String(req.query.song_key || req.query.songKey || '').trim();
+    if (!key) return res.status(400).json({ code: -1, message: 'song_key必须存在' });
+    const snapshot = readLyricsSnapshot(roomId, key);
+    res.json({ code: 0, data: snapshot });
+});
+
+router.post('/live/sync-lyrics', (req, res) => {
+    const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    const key = String(req.body?.songKey || req.body?.song_key || '').trim();
+    if (!key) return res.status(400).json({ code: -1, message: 'songKey必须存在' });
+    const current = readRoomState(roomId);
+    const auth = publisherAuthResult(current, requestPublisherInfo(req.body), { allowLegacy: false });
+    if (!auth.ok) return res.status(409).json({ code: -1, data: current, reason: auth.reason });
+    const lyrics = normalizeLyricsPayload(req.body?.lyrics);
+    const canonical = JSON.stringify(lyrics);
+    const contentHash = crypto.createHash('sha256').update(canonical).digest('hex');
+    const previous = readLyricsSnapshot(roomId, key);
+    const revision = previous && previous.contentHash === contentHash
+        ? Number(previous.revision) || 1
+        : (Number(previous?.revision) || 0) + 1;
+    const snapshot = { roomId, songKey: key, lyrics, contentHash, revision, updatedAt: Date.now() };
+    writeSyncFile(lyricsFilePath(roomId, key), snapshot);
+    sharedLyricsSnapshots.set(`${roomId}:${key}`, snapshot);
+    const next = {
+        ...current,
+        lyrics: { songKey: key, status: lyrics.noLyrics ? 'empty' : 'ready', revision, contentHash, updatedAt: snapshot.updatedAt }
+    };
+    const persisted = persistRoomState(roomId, next);
+    res.json({ code: 0, data: snapshot, state: persisted });
+});
+
 router.post('/live/sync-command', (req, res) => {
     const roomId = String(req.body?.room_id || req.body?.roomid || 'default');
+    if (!trustedLocalOrigin(req)) return res.status(403).json({ code: -1, reason: 'untrusted-origin' });
     const command = req.body?.command;
     if (!command || typeof command !== 'object') {
         return res.status(400).json({ code: -1, message: 'command必须是对象' });
     }
+    const current = readRoomState(roomId);
     const allowedCommands = new Set([
         'loadSongList', 'addOrder', 'next', 'play', 'volume', 'settings',
         'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue', 'removeOrder', 'seek'
@@ -874,14 +1726,35 @@ router.post('/live/sync-command', (req, res) => {
     }
     const filePath = commandLogPath(roomId);
     const list = sharedOrderCommands.get(roomId) || readCommandLog(filePath);
+    const commandId = String(command.id || '').trim();
+    if (commandId) {
+        const duplicate = list.find(item => String(item.id || '') === commandId);
+        if (duplicate) {
+            const state = readRoomState(roomId);
+            return res.status(duplicate.result?.accepted === false ? (Number(duplicate.result.httpStatus) || 409) : 200).json({
+                code: duplicate.result?.accepted === false ? -1 : 0,
+                data: state,
+                result: { ...(duplicate.result || {}), duplicate: true }
+            });
+        }
+    }
     const lastSequence = list.reduce((max, item) => Math.max(max, Number(item.sequence) || 0), 0);
     const nextCommand = {
         ...command,
+        publisherId: command.publisherId || req.body?.publisherId || '',
+        generation: command.generation ?? req.body?.generation,
+        leaseToken: command.leaseToken || req.body?.leaseToken || '',
         sequence: Math.max(sharedOrderCommandSeq, lastSequence) + 1,
         createdAt: Date.now()
     };
     const applied = applyRoomCommand(roomId, nextCommand);
     const canonicalState = applied.state;
+    const publisher = currentPublisherInfo(canonicalState);
+    const publisherOnline = Boolean(publisher.publisherId && publisher.status === 'active' &&
+        Date.now() - publisher.heartbeatAt < SYNC_PUBLISHER_LEASE_MS);
+    if (applied.result.accepted !== false) {
+        applied.result.delivery = publisherOnline ? 'queued' : 'pending';
+    }
     // 命令日志只保留最小执行摘要，完整 idleSongList/currentSong 只存在状态文件。
     const logEntry = {
         sequence: nextCommand.sequence,

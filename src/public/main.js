@@ -1,11 +1,11 @@
-import musicPlayer from './components/music-player.js?v=20260812-25';
+import musicPlayer from './components/music-player.js?v=20260815-3';
 import './components/queue-manager.js?v=20260812-2';
 import orderConfiger from './components/order-configer.js?v=20260810-41';
 import loginConfiger from './components/login-configer.js?v=20260810-42'
 import danmuConfiger from './components/danmu-configer.js?v=20260813-1';
 import publicMethod from './utils/common.js?v=20260810-41';
 
-const FRONTEND_BUILD_ID = '20260812-25';
+const FRONTEND_BUILD_ID = '20260815-3';
 window.__DAMUKU_FRONTEND_BUILD_ID = FRONTEND_BUILD_ID;
 
 async function initializeMainPage() {
@@ -24,6 +24,10 @@ async function initializeMainPage() {
     let settingsGlobalRevision = 0;
     let settingsRoomRevision = 0;
     let settingsSaveQueue = Promise.resolve();
+    let settingsSaveInFlight = false;
+    let settingsRequestSequence = 0;
+    let settingsAppliedSequence = 0;
+    let settingsSaveStatus = '已保存';
     const syncBaseForSettings = publicMethod.resolveApiBase(window.API_CONFIG?.bili_api);
     const roomIdForSettings = pageParams.get('roomid') || pageParams.get('room_id') || 'default';
 
@@ -90,6 +94,9 @@ async function initializeMainPage() {
             lyricsOverlayLines: Number(localStorage.getItem('lyricsOverlayLines') || 1),
             lyricsOverlayWidth: Number(localStorage.getItem('lyricsOverlayWidth') || 92),
             progressSeekEnabled: readFlag('progressSeekEnabled', true),
+            multiSceneHandoffEnabled: readFlag('multiSceneHandoffEnabled', false),
+            multiSceneAutoSwitchEnabled: readFlag('multiSceneAutoSwitchEnabled', false),
+            multiSceneHeartbeatThresholdMs: Number(localStorage.getItem('multiSceneHeartbeatThresholdMs') || 5000),
             customOverlayCss: localStorage.getItem('customOverlayCss') || ''
         },
         login: {
@@ -99,11 +106,29 @@ async function initializeMainPage() {
         }
     });
 
-    const applyAuthoritativeSettings = data => {
-        if (!data) return;
-        settingsRevision = Number(data.revision || Math.max(data.globalRevision || 0, data.roomRevision || 0));
-        settingsGlobalRevision = Number(data.globalRevision || 0);
-        settingsRoomRevision = Number(data.roomRevision || 0);
+    const setSettingsSaveStatus = (status, detail = '') => {
+        settingsSaveStatus = status;
+        const element = document.getElementById('multiSceneSettingsStatus');
+        if (element) {
+            element.textContent = detail || status;
+            element.dataset.state = status;
+        }
+    };
+
+    const applyAuthoritativeSettings = (data, { sequence = 0, force = false } = {}) => {
+        if (!data) return false;
+        const incomingRevision = Number.isFinite(Number(data.revision)) ? Number(data.revision) : 0;
+        const incomingGlobalRevision = Number.isFinite(Number(data.globalRevision)) ? Number(data.globalRevision) : 0;
+        const incomingRoomRevision = Number.isFinite(Number(data.roomRevision)) ? Number(data.roomRevision) : 0;
+        if (!force && (incomingGlobalRevision < settingsGlobalRevision || incomingRoomRevision < settingsRoomRevision ||
+            incomingRevision < settingsRevision || (sequence > 0 && sequence < settingsAppliedSequence))) return false;
+        settingsRevision = Math.max(0, incomingRevision);
+        settingsGlobalRevision = Math.max(0, incomingGlobalRevision);
+        settingsRoomRevision = Math.max(0, incomingRoomRevision);
+        settingsAppliedSequence = Math.max(settingsAppliedSequence, sequence);
+        window.__displaySettingsRevision = settingsRevision;
+        window.__displaySettingsGlobalRevision = settingsGlobalRevision;
+        window.__displaySettingsRoomRevision = settingsRoomRevision;
         serverDisplaySettings = data.display || null;
         window.__displaySettings = serverDisplaySettings || {};
         if (data.order) orderConfiger.applySharedState(data.order);
@@ -111,10 +136,13 @@ async function initializeMainPage() {
         if (data.volume != null) musicPlayer.applyVolume(data.volume);
         applyAppearance();
         window.dispatchEvent(new CustomEvent('bilibili-display-settings-changed'));
+        return true;
     };
 
-    const fetchAuthoritativeSettings = async ({ migrate = false } = {}) => {
+    const fetchAuthoritativeSettings = async ({ migrate = false, force = false } = {}) => {
         if (!syncBaseForSettings) return null;
+        if (settingsSaveInFlight && !force) return null;
+        const sequence = ++settingsRequestSequence;
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 3000);
         try {
@@ -132,6 +160,8 @@ async function initializeMainPage() {
                     'userHistory', 'songHistory', 'userBlackList', 'songBlackList',
                     'overlayOpacity', 'overlayBlur', 'overlayTheme', 'customOverlayCss',
                     'lyricsOverlayWidth', 'lyricsDisplayMode',
+                    'multiSceneHandoffEnabled',
+                    'multiSceneAutoSwitchEnabled', 'multiSceneHeartbeatThresholdMs',
                     'songListId', 'songListHistory'
                 ].includes(key));
                 if (hasLegacy) {
@@ -139,7 +169,7 @@ async function initializeMainPage() {
                     if (migrated) data = migrated;
                 }
             }
-            applyAuthoritativeSettings(data);
+            applyAuthoritativeSettings(data, { sequence });
             return data;
         } catch (_) {
             return null;
@@ -151,6 +181,9 @@ async function initializeMainPage() {
     const saveAuthoritativeSettings = async (settings, { allowMigration = false } = {}) => {
         const save = async () => {
             if (!syncBaseForSettings) return null;
+            settingsSaveInFlight = true;
+            const sequence = ++settingsRequestSequence;
+            setSettingsSaveStatus('saving', '正在保存...');
             try {
                 const response = await fetch(`${syncBaseForSettings}/live/settings`, {
                 method: 'PUT',
@@ -166,13 +199,20 @@ async function initializeMainPage() {
                 });
                 const result = await response.json().catch(() => null);
                 if (!response.ok || result?.code !== 0) {
-                    if (!allowMigration) await fetchAuthoritativeSettings();
+                    if (!allowMigration) {
+                        setSettingsSaveStatus('conflict', '保存冲突，已重新读取');
+                        await fetchAuthoritativeSettings({ migrate: false, force: true });
+                    } else setSettingsSaveStatus('failed', '保存失败，请重试');
                     return null;
                 }
-                applyAuthoritativeSettings(result.data);
+                applyAuthoritativeSettings(result.data, { sequence, force: true });
+                setSettingsSaveStatus('saved', '已保存');
                 return result.data;
             } catch (_) {
+                setSettingsSaveStatus('failed', '保存失败，请重试');
                 return null;
+            } finally {
+                settingsSaveInFlight = false;
             }
         };
         const task = settingsSaveQueue.then(save, save);
@@ -231,9 +271,18 @@ async function initializeMainPage() {
         Object.entries(liveInputs).forEach(([key, input]) => {
             if (input) input.checked = Boolean(value(key, key === 'liveShowQueueHeader' || key === 'liveShowRequester'));
         });
-        for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled']) {
+        for (const key of ['lyricsEnabled', 'lyricsTranslation', 'progressSeekEnabled', 'multiSceneHandoffEnabled', 'multiSceneAutoSwitchEnabled']) {
             const input = document.getElementById(key);
-            if (input) input.checked = Boolean(value(key, true));
+            if (input) input.checked = Boolean(value(key, key === 'multiSceneAutoSwitchEnabled' || key === 'multiSceneHandoffEnabled' ? false : true));
+        }
+        const autoSwitchEnabled = Boolean(value('multiSceneAutoSwitchEnabled', false));
+        const handoffEnabled = Boolean(value('multiSceneHandoffEnabled', false));
+        const autoSwitchInput = document.getElementById('multiSceneAutoSwitchEnabled');
+        const thresholdInput = document.getElementById('multiSceneHeartbeatThresholdMs');
+        if (autoSwitchInput) autoSwitchInput.disabled = !handoffEnabled;
+        if (thresholdInput) {
+            thresholdInput.value = String(value('multiSceneHeartbeatThresholdMs', 5000));
+            thresholdInput.disabled = !handoffEnabled || !autoSwitchEnabled;
         }
         const lyricsDisplayModeInput = document.getElementById('lyricsDisplayMode');
         if (lyricsDisplayModeInput) lyricsDisplayModeInput.value = value('lyricsDisplayMode', 'wrap');
@@ -276,6 +325,9 @@ async function initializeMainPage() {
         lyricsOverlayLines: Number(document.getElementById('lyricsOverlayLines')?.value || 1),
         lyricsOverlayWidth: Number(document.getElementById('lyricsOverlayWidth')?.value || 92),
         progressSeekEnabled: Boolean(document.getElementById('progressSeekEnabled')?.checked),
+        multiSceneHandoffEnabled: Boolean(document.getElementById('multiSceneHandoffEnabled')?.checked),
+        multiSceneAutoSwitchEnabled: Boolean(document.getElementById('multiSceneAutoSwitchEnabled')?.checked),
+        multiSceneHeartbeatThresholdMs: Number(document.getElementById('multiSceneHeartbeatThresholdMs')?.value || 5000),
         customOverlayCss: document.getElementById('customOverlayCss')?.value || ''
     });
     const publishDisplaySettings = () => {
@@ -303,7 +355,7 @@ async function initializeMainPage() {
             publishDisplaySettings();
         };
     });
-    ['lyricsEnabled', 'lyricsTranslation', 'lyricsDisplayMode', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'lyricsOverlayWidth', 'progressSeekEnabled'].forEach(key => {
+    ['lyricsEnabled', 'lyricsTranslation', 'lyricsDisplayMode', 'lyricsOffsetMs', 'lyricsFontSize', 'lyricsColor', 'lyricsOpacity', 'lyricsOverlayLines', 'lyricsOverlayWidth', 'progressSeekEnabled', 'multiSceneHandoffEnabled', 'multiSceneAutoSwitchEnabled', 'multiSceneHeartbeatThresholdMs'].forEach(key => {
         const input = document.getElementById(key);
         if (input) input.onchange = () => {
             publishDisplaySettings();
@@ -378,6 +430,140 @@ async function initializeMainPage() {
     // 用于确认 WebSocket 实时收包；不注册点歌回调，避免和 OBS 播放页重复点歌。
     if (realtimeDebugObserver) danmuConfiger.startDanmu({ processCommands: false });
     if (!settingsOnly && !playbackMode) musicPlayer.requestSharedState();
+
+    const sceneHandoffPanel = document.getElementById('sceneHandoffPanel');
+    const sceneHandoffStatus = document.getElementById('sceneHandoffStatus');
+    const sceneHandoffTarget = document.getElementById('sceneHandoffTarget');
+    const sceneHandoffSwitch = document.getElementById('sceneHandoffSwitch');
+    const sceneAutoSwitchStatus = document.getElementById('sceneAutoSwitchStatus');
+    const sceneHandoffCandidates = document.getElementById('sceneHandoffCandidates');
+    const isSceneHandoffControl = !settingsOnly && !lyricOnlyMode && pageRole === 'control';
+    let sceneHandoffTimer = null;
+    let sceneHandoffInFlight = false;
+    let latestSceneCandidates = [];
+    let latestScenePublisher = null;
+
+    const setSceneHandoffVisible = visible => {
+        if (sceneHandoffPanel) sceneHandoffPanel.hidden = !visible;
+        if (!visible && sceneHandoffTimer) {
+            clearInterval(sceneHandoffTimer);
+            sceneHandoffTimer = null;
+        }
+    };
+    const renderSceneHandoff = payload => {
+        latestSceneCandidates = (Array.isArray(payload?.data) ? payload.data : []).slice().sort((a, b) => {
+            if (Boolean(a.isPublisher) !== Boolean(b.isPublisher)) return a.isPublisher ? -1 : 1;
+            if (Boolean(a.conflict) !== Boolean(b.conflict)) return a.conflict ? 1 : -1;
+            return String(a.instanceId || '').localeCompare(String(b.instanceId || ''), undefined, { numeric: true, sensitivity: 'base' });
+        });
+        latestScenePublisher = payload?.publisher || null;
+        if (!sceneHandoffTarget || !sceneHandoffStatus || !sceneHandoffCandidates) return;
+        const previous = sceneHandoffTarget.value;
+        sceneHandoffTarget.replaceChildren();
+        latestSceneCandidates.forEach(candidate => {
+            const option = document.createElement('option');
+            option.value = candidate.instanceId;
+            option.textContent = `${candidate.instanceId}${candidate.isPublisher ? '（当前播放）' : candidate.conflict ? '（instance 冲突）' : candidate.reloading ? '（重新加载中）' : '（在线）'}`;
+            // 重复 instance 仍允许手动明确选择当前 activation；自动模式会排除它。
+            option.disabled = Boolean(candidate.isPublisher);
+            sceneHandoffTarget.appendChild(option);
+        });
+        if ([...sceneHandoffTarget.options].some(option => option.value === previous)) sceneHandoffTarget.value = previous;
+        const handoff = payload?.handoff;
+        const autoSwitch = payload?.autoSwitch || {};
+        const completedCurrentHandoff = handoff?.state === 'completed' &&
+            handoff?.result?.targetInstanceId &&
+            handoff.result.targetInstanceId === latestScenePublisher?.instanceId &&
+            autoSwitch.state === 'completed';
+        const stateLabel = completedCurrentHandoff ? '切换完成' :
+            handoff?.state === 'target-pending' ? '等待目标接管' :
+                handoff?.state === 'failed' ? '切换失败' :
+                    autoSwitch.state === 'ambiguous' ? '等待手动选择' :
+                        autoSwitch.state === 'switching' ? '自动接管中' : '当前播放';
+        const resolvedStateLabel = stateLabel;
+        const autoLabel = autoSwitch.state === 'switching' ? `自动切换：正在接管 ${autoSwitch.targetInstanceId || ''}` :
+            autoSwitch.state === 'completed' ? `自动切换：已完成 ${autoSwitch.targetInstanceId || ''}` :
+                autoSwitch.state === 'ambiguous' ? '自动切换：检测到多个在线场景，请手动选择' :
+                    autoSwitch.state === 'waiting' ? '自动切换：等待明确的唯一场景' :
+                        autoSwitch.state === 'failed' ? `自动切换：失败（${autoSwitch.reason || '未知原因'}）` :
+                            autoSwitch.reason === 'auto-switch-disabled' ? '自动切换：未启用' : '自动切换：已关闭';
+        if (sceneAutoSwitchStatus) sceneAutoSwitchStatus.textContent = autoLabel;
+        sceneHandoffStatus.textContent = latestScenePublisher?.instanceId
+            ? `${latestScenePublisher.instanceId} · ${resolvedStateLabel}`
+            : resolvedStateLabel;
+        sceneHandoffCandidates.textContent = latestSceneCandidates.length
+            ? latestSceneCandidates.map(candidate => {
+                const song = candidate.currentSong?.sname || '暂无歌曲';
+                const position = Math.max(0, Math.floor((Number(candidate.playback?.positionMs) || 0) / 1000));
+                return `${candidate.instanceId}：${candidate.isPublisher ? `当前播放 generation=${candidate.generation}` : '在线'}，${song} ${Math.floor(position / 60).toString().padStart(2, '0')}:${(position % 60).toString().padStart(2, '0')}，${Math.max(0, Date.now() - Number(candidate.lastSeenAt || 0))}ms 前心跳`;
+            }).join('；')
+            : '没有在线的 handoff 播放源，请先切换直播姬场景并等待页面加载。';
+        const selected = latestSceneCandidates.find(candidate => candidate.instanceId === sceneHandoffTarget.value);
+        if (sceneHandoffSwitch) sceneHandoffSwitch.disabled = sceneHandoffInFlight || !selected || selected.isPublisher;
+    };
+    const pollSceneHandoff = async () => {
+        if (!isSceneHandoffControl || !syncBaseForSettings || serverDisplaySettings?.multiSceneHandoffEnabled !== true || sceneHandoffInFlight) return;
+        try {
+            const response = await fetch(`${syncBaseForSettings}/live/sync-candidates?room_id=${encodeURIComponent(roomIdForSettings)}`, { cache: 'no-store' });
+            const payload = await response.json();
+            if (payload.enabled !== true) {
+                setSceneHandoffVisible(false);
+                return;
+            }
+            renderSceneHandoff(payload);
+        } catch (_) {
+            if (sceneHandoffStatus) sceneHandoffStatus.textContent = '读取候选失败';
+        }
+    };
+    const startSceneHandoff = () => {
+        if (!isSceneHandoffControl || !syncBaseForSettings || serverDisplaySettings?.multiSceneHandoffEnabled !== true) {
+            setSceneHandoffVisible(false);
+            return;
+        }
+        setSceneHandoffVisible(true);
+        pollSceneHandoff();
+        if (!sceneHandoffTimer) sceneHandoffTimer = setInterval(pollSceneHandoff, 1000);
+    };
+    sceneHandoffSwitch?.addEventListener('click', async () => {
+        if (sceneHandoffInFlight || !sceneHandoffTarget?.value) return;
+        sceneHandoffInFlight = true;
+        sceneHandoffSwitch.disabled = true;
+        const switchId = `switch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        if (sceneHandoffStatus) sceneHandoffStatus.textContent = '正在切换...';
+        try {
+            const fresh = await fetch(`${syncBaseForSettings}/live/sync-candidates?room_id=${encodeURIComponent(roomIdForSettings)}`, { cache: 'no-store' }).then(response => response.json());
+            const target = (fresh.data || []).find(candidate => candidate.instanceId === sceneHandoffTarget.value);
+            if (!target || target.isPublisher) {
+                if (sceneHandoffStatus) sceneHandoffStatus.textContent = '目标播放源已离线，请刷新列表';
+                return;
+            }
+            const response = await fetch(`${syncBaseForSettings}/live/sync-switch`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                    room_id: roomIdForSettings,
+                    targetInstanceId: target.instanceId,
+                    targetActivationId: target.activationId,
+                    switchId,
+                    expectedGeneration: fresh.publisher?.generation,
+                    expectedInstanceId: fresh.publisher?.instanceId
+                })
+            });
+            const result = await response.json();
+            if (!response.ok || result.code !== 0) {
+                if (sceneHandoffStatus) sceneHandoffStatus.textContent = result.reason === 'scene-handoff-disabled' ? '功能已关闭' : `切换失败：${result.reason || '状态冲突'}`;
+                return;
+            }
+            if (sceneHandoffStatus) sceneHandoffStatus.textContent = `${target.instanceId} 等待接管`;
+        } catch (_) {
+            if (sceneHandoffStatus) sceneHandoffStatus.textContent = '切换请求失败';
+        } finally {
+            sceneHandoffInFlight = false;
+            await pollSceneHandoff();
+        }
+    });
+    window.addEventListener('bilibili-display-settings-changed', startSceneHandoff);
+    startSceneHandoff();
 
     // 播放控制。浏览器通常不允许弹幕事件直接触发声音，用户点击一次即可解锁。
     const unlockAudio = () => musicPlayer.unlockPlayback();
