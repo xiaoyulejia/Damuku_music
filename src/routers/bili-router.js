@@ -5,18 +5,12 @@ const fs = require('fs');
 const path = require('path');
 const encrypt = require('../utils/encrypt');
 const { LocalStore, mergeSettings } = require('../services/local-store');
+const { getBiliSession } = require('../services/bili-session');
+const { getAttachedLiveDanmuHub } = require('../services/bili-live-ws');
 
 // 创建axios实例，指向B站开放平台
 const api = axios.create({
     baseURL: "https://live-open.biliapi.com"
-});
-
-const liveApi = axios.create({
-    baseURL: "https://api.live.bilibili.com",
-    headers: {
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-        'referer': 'https://live.bilibili.com/'
-    }
 });
 
 // 鉴权加密处理headers
@@ -33,7 +27,9 @@ const sharedOrderCommands = new Map();
 const sharedRuntimeCredentials = new Map();
 const localStore = new LocalStore(path.resolve(__dirname, '../..'));
 let sharedOrderCommandSeq = 0;
-const SYNC_PUBLISHER_LEASE_MS = 5000;
+// OBS 最小化后，内置 Chromium 可能把页面定时器延迟数秒甚至更久。
+// 5 秒租约会把仍在播放的 OBS 误判为离线，导致播放端被重新接管。
+const SYNC_PUBLISHER_LEASE_MS = 60 * 1000;
 const sharedSyncDir = localStore.cacheDir;
 fs.mkdirSync(sharedSyncDir, { recursive: true });
 const MAX_COMMAND_LOG_ENTRIES = 1000;
@@ -105,6 +101,15 @@ function defaultRoomState() {
         status: '等待播放',
         volume: 50,
         audioUnlockRequired: false,
+        playback: {
+            songKey: '',
+            positionMs: 0,
+            durationMs: 0,
+            paused: true,
+            seeking: false,
+            readyState: 0,
+            sampledAt: 0
+        },
         songListId: '',
         idleSongList: [],
         idleIndex: -1,
@@ -135,6 +140,33 @@ function normalizeSong(song) {
         sname: String(song.sname || song.name || '').slice(0, 300),
         sartist: String(song.sartist || song.artist || '').slice(0, 300),
         duration: Number(song.duration) || 0
+    };
+}
+
+function songKey(song) {
+    if (!song?.sid) return '';
+    return `${song.platform || 'wy'}:${song.sid}`;
+}
+
+function finiteClamp(value, min, max, fallback = min) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Math.max(min, Math.min(max, number));
+}
+
+function normalizePlayback(playback, currentSong) {
+    const expectedKey = songKey(currentSong);
+    const durationMs = finiteClamp(playback?.durationMs, 0, 24 * 60 * 60 * 1000);
+    const positionMs = finiteClamp(playback?.positionMs, 0, durationMs || 24 * 60 * 60 * 1000);
+    const sameSong = playback?.songKey === expectedKey && Boolean(expectedKey);
+    return {
+        songKey: sameSong ? expectedKey : '',
+        positionMs: sameSong ? positionMs : 0,
+        durationMs: sameSong ? durationMs : 0,
+        paused: Boolean(playback?.paused),
+        seeking: Boolean(playback?.seeking),
+        readyState: finiteClamp(playback?.readyState, 0, 4),
+        sampledAt: finiteClamp(playback?.sampledAt, 0, Date.now() + 60_000)
     };
 }
 
@@ -171,6 +203,7 @@ function normalizeRoomState(input = {}) {
         ...input,
         queue,
         currentSong,
+        playback: normalizePlayback(input.playback, currentSong),
         currentRequester: String(input.currentRequester || queue[0]?.uname || ''),
         status: String(input.status || (currentSong ? '等待播放' : '等待点歌')),
         volume: Math.max(0, Math.min(100, input.volume == null ? defaults.volume : Number(input.volume) || 0)),
@@ -487,6 +520,37 @@ function applyRoomCommand(roomId, command) {
             queueChanged = true;
             break;
         }
+        case 'removeOrder': {
+            const conflict = queueConflict(state, value, { requireQueueRevision: true });
+            if (conflict) {
+                result = { accepted: false, command: command.command, ...conflict };
+                break;
+            }
+            const orderId = String(value?.orderId || '').trim();
+            if (!orderId || orderId.length > 200) {
+                result = { accepted: false, command: command.command, reason: 'orderId无效', httpStatus: 400 };
+                break;
+            }
+            const targetIndex = state.queue.findIndex(item => String(item.orderId) === orderId);
+            if (targetIndex < 0) {
+                result = { accepted: false, command: command.command, reason: 'order-not-found', httpStatus: 409 };
+                break;
+            }
+            if (targetIndex === 0 || String(state.queue[targetIndex]?.orderId) === currentOrderId(state)) {
+                result = { accepted: false, command: command.command, reason: 'current-song-not-removable', httpStatus: 400 };
+                break;
+            }
+            const [removed] = state.queue.splice(targetIndex, 1);
+            result = {
+                accepted: true,
+                command: command.command,
+                removed: true,
+                orderId,
+                songName: removed?.song?.sname || ''
+            };
+            queueChanged = true;
+            break;
+        }
         case 'play':
             if (!state.currentSong) {
                 if (!state.queue.length) {
@@ -501,6 +565,32 @@ function applyRoomCommand(roomId, command) {
         case 'volume':
             state.volume = Math.max(0, Math.min(100, Number(value) || 0));
             break;
+        case 'seek': {
+            if (!state.currentSong) {
+                result = { accepted: false, command: command.command, reason: 'no-current-song', httpStatus: 409 };
+                break;
+            }
+            const expectedSongKey = String(value?.expectedSongKey || '');
+            if (expectedSongKey !== songKey(state.currentSong)) {
+                result = { accepted: false, command: command.command, reason: 'song-changed', httpStatus: 409 };
+                break;
+            }
+            const rawPosition = Number(value?.positionMs);
+            if (!Number.isFinite(rawPosition) || rawPosition < 0) {
+                result = { accepted: false, command: command.command, reason: 'position-invalid', httpStatus: 400 };
+                break;
+            }
+            const durationMs = Number(state.playback?.durationMs) || Number(state.currentSong.duration || 0) * 1000;
+            const positionMs = Math.max(0, Math.min(durationMs > 0 ? durationMs : rawPosition, rawPosition));
+            state.playback = {
+                ...state.playback,
+                songKey: expectedSongKey,
+                positionMs,
+                seeking: true
+            };
+            result = { accepted: true, command: command.command, positionMs, expectedSongKey };
+            break;
+        }
         case 'settings':
             state.settings = {
                 order: mergeSettings({ order: { ...state.settings.order, ...(value?.order || {}) } }).order,
@@ -535,14 +625,6 @@ function applyRoomCommand(roomId, command) {
         result.queueRevision = persisted.queueRevision;
     }
     return { state: persisted, result };
-}
-
-const MIXIN_KEY_TABLE = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13];
-
-function wbiSign(params, mixinKey) {
-    const signed = { ...params, wts: Math.floor(Date.now() / 1000) };
-    const query = Object.keys(signed).sort().map(key => `${encodeURIComponent(key)}=${encodeURIComponent(String(signed[key]).replace(/[!'()*]/g, ''))}`).join('&');
-    return { ...signed, w_rid: crypto.createHash('md5').update(query + mixinKey).digest('hex') };
 }
 
 // 兼容直播姬等内置 WebView：部分版本会把本地页面当作不同安全上下文，
@@ -741,6 +823,7 @@ router.post('/live/sync-state', (req, res) => {
         status: state.status || canonical.status,
         volume: state.volume == null ? canonical.volume : state.volume,
         audioUnlockRequired: Boolean(state.audioUnlockRequired),
+        playback: state.playback || canonical.playback,
         settings: {
             order: state.settings?.order || canonical.settings.order || null,
             login: state.settings?.login || canonical.settings.login || null
@@ -764,19 +847,29 @@ router.post('/live/sync-command', (req, res) => {
     }
     const allowedCommands = new Set([
         'loadSongList', 'addOrder', 'next', 'play', 'volume', 'settings',
-        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue'
+        'pause', 'toggle', 'unlockAudio', 'promoteNext', 'reorderQueue', 'removeOrder', 'seek'
     ]);
     if (!allowedCommands.has(String(command.command || ''))) {
         return res.status(400).json({ code: -1, message: '不支持的控制指令' });
     }
-    if (['promoteNext', 'reorderQueue'].includes(command.command)) {
+    if (['promoteNext', 'reorderQueue', 'removeOrder'].includes(command.command)) {
         const value = command.value;
         const allowedFields = command.command === 'promoteNext'
             ? ['orderId', 'expectedRevision', 'expectedQueueRevision', 'expectedCurrentOrderId']
-            : ['expectedQueueRevision', 'expectedCurrentOrderId', 'pendingOrderIds'];
+            : command.command === 'removeOrder'
+                ? ['orderId', 'expectedQueueRevision', 'expectedCurrentOrderId']
+                : ['expectedQueueRevision', 'expectedCurrentOrderId', 'pendingOrderIds'];
         if (!value || typeof value !== 'object' || Array.isArray(value) ||
             Object.keys(value).some(key => !allowedFields.includes(key))) {
             return res.status(400).json({ code: -1, message: '队列控制参数无效' });
+        }
+    }
+    if (command.command === 'seek') {
+        const value = command.value;
+        const allowedFields = ['positionMs', 'expectedSongKey'];
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            Object.keys(value).some(key => !allowedFields.includes(key))) {
+            return res.status(400).json({ code: -1, message: 'seek参数无效' });
         }
     }
     const filePath = commandLogPath(roomId);
@@ -801,17 +894,21 @@ router.post('/live/sync-command', (req, res) => {
                 listId: nextCommand.value?.listId || ''
             }
             : nextCommand.command === 'volume' ? nextCommand.value
-                : ['promoteNext', 'reorderQueue'].includes(nextCommand.command)
-                    ? {
-                        orderId: nextCommand.value?.orderId || '',
+                    : ['promoteNext', 'reorderQueue', 'removeOrder'].includes(nextCommand.command)
+                        ? {
+                            orderId: nextCommand.value?.orderId || '',
                         expectedRevision: nextCommand.value?.expectedRevision,
                         expectedQueueRevision: nextCommand.value?.expectedQueueRevision,
                         expectedCurrentOrderId: nextCommand.value?.expectedCurrentOrderId || '',
-                        pendingOrderIds: Array.isArray(nextCommand.value?.pendingOrderIds)
-                            ? nextCommand.value.pendingOrderIds.slice(0, MAX_QUEUE_REORDER_ITEMS)
-                            : undefined
-                    }
-                    : undefined,
+                            pendingOrderIds: Array.isArray(nextCommand.value?.pendingOrderIds)
+                                ? nextCommand.value.pendingOrderIds.slice(0, MAX_QUEUE_REORDER_ITEMS)
+                                : undefined,
+                            removeOrder: nextCommand.command === 'removeOrder'
+                        }
+                    : nextCommand.command === 'seek' ? {
+                        positionMs: nextCommand.value?.positionMs,
+                        expectedSongKey: nextCommand.value?.expectedSongKey || ''
+                    } : undefined,
         createdAt: nextCommand.createdAt,
         stateRevision: canonicalState.stateRevision,
         result: applied.result
@@ -838,42 +935,21 @@ router.get('/live/sync-commands', (req, res) => {
     res.json({ code: 0, data: commands });
 });
 
-async function getWbiMixinKey() {
-    const { data } = await axios.get('https://api.bilibili.com/x/web-interface/nav');
-    const wbi = data?.data?.wbi_img;
-    if (!wbi?.img_url || !wbi?.sub_url) throw new Error('无法获取B站WBI密钥');
-    const fileName = url => url.split('/').pop().split('.')[0];
-    const origin = fileName(wbi.img_url) + fileName(wbi.sub_url);
-    return MIXIN_KEY_TABLE.map(index => origin[index] || '').join('');
-}
-
-async function resolveRoomId(roomId) {
-    try {
-        const response = await liveApi.get('/xlive/web-room/v1/index/getH5InfoByRoom', {
-            params: { room_id: roomId }
-        });
-        return Number(
-            response.data?.data?.room_info?.room_id ||
-            response.data?.data?.room_info?.roomid ||
-            response.data?.data?.room_id ||
-            roomId
-        );
-    } catch (_) {
-        return roomId;
-    }
-}
-
 // 普通直播间弹幕鉴权，不依赖B站开放平台许可
 router.get('/live/danmu-info', async (req, res) => {
     const roomId = Number(req.query.room_id || req.query.roomid);
     if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
     try {
-        const realRoomId = await resolveRoomId(roomId);
-        const params = wbiSign({ id: realRoomId, web_location: 444.8 }, await getWbiMixinKey());
-        const response = await liveApi.get('/xlive/web-room/v1/index/getDanmuInfo', { params });
-        res.status(response.status).json({
-            ...response.data,
-            data: { ...response.data.data, _room_id: realRoomId }
+        const session = getBiliSession();
+        const info = await session.getDanmuInfo(roomId);
+        res.json({
+            code: 0,
+            message: '0',
+            data: {
+                _room_id: info.roomId,
+                host_list: info.raw.host_list,
+                session: session.diagnostics()
+            }
         });
     } catch (error) {
         console.error('获取B站直播弹幕token失败:', error.response?.data || error.message);
@@ -886,19 +962,24 @@ router.get('/live/danmu-history', async (req, res) => {
     const roomId = Number(req.query.room_id || req.query.roomid);
     if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
     try {
-        const realRoomId = await resolveRoomId(roomId);
-        const response = await liveApi.get('/xlive/web-room/v1/dM/gethistory', {
-            params: { roomid: realRoomId },
-            headers: { referer: `https://live.bilibili.com/${realRoomId}` }
-        });
-        res.status(response.status).json({
-            ...response.data,
-            data: { ...response.data.data, _room_id: realRoomId }
+        const history = await getBiliSession().getHistory(roomId);
+        res.json({
+            ...history.raw,
+            data: { ...history.raw.data, _room_id: history.roomId }
         });
     } catch (error) {
         console.error('获取B站历史弹幕失败:', error.response?.data || error.message);
         res.status(502).json({ code: -1, message: '获取B站历史弹幕失败', detail: error.message });
     }
+});
+
+// 只返回无敏感信息的连接汇总，用于确认漏消息发生在上游、解析还是浏览器转发层。
+router.get('/live/metrics', (req, res) => {
+    const roomId = Number(req.query.room_id || req.query.roomid);
+    if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
+    const metrics = getAttachedLiveDanmuHub()?.metricsFor(roomId);
+    if (!metrics) return res.status(404).json({ code: -1, message: '该房间当前没有实时弹幕连接' });
+    res.json({ code: 0, data: metrics });
 });
 
 /**

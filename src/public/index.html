@@ -12,13 +12,13 @@
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260812-2"></script>
+    <script type="module" src="./main.js?v=20260813-1"></script>
     <!-- 总体样式文件 -->
-    <link rel="stylesheet" href="./styles/main-page.css?v=20260810-6">
+    <link rel="stylesheet" href="./styles/main-page.css?v=20260812-25">
     <!-- 点歌面板样式 -->
     <link rel="stylesheet" href="./styles/order-table.css?v=20260809-16">
     <!-- 设置面板样式 -->
-    <link rel="stylesheet" href="./styles/setting-page.css?v=20260809-16">
+    <link rel="stylesheet" href="./styles/setting-page.css?v=20260812-24">
     <style id="customOverlayStyle"></style>
 </head>
 
@@ -29,6 +29,21 @@
             <h2 id="backendOfflineTitle">正在检查后端服务</h2>
             <p id="backendOfflineMessage">请稍候，正在确认点歌台服务是否运行。</p>
             <button id="backendRetryBtn" type="button">重新检查</button>
+        </div>
+    </div>
+    <div id="versionMismatchOverlay" class="backendOfflineOverlay versionMismatchOverlay" role="alertdialog" aria-live="assertive" hidden>
+        <div class="backendOfflineCard versionMismatchCard">
+            <div class="backendOfflineIcon">↻</div>
+            <h2 id="versionMismatchTitle">页面版本需要更新</h2>
+            <p id="versionMismatchMessage">当前页面加载的 JavaScript 与后端版本不一致，请刷新页面。</p>
+            <div class="versionMismatchDetails">
+                <span>页面：<code id="frontendBuildIdText">未知</code></span>
+                <span>后端：<code id="backendBuildIdText">未知</code></span>
+            </div>
+            <div class="versionMismatchActions">
+                <button id="clearCacheRefreshBtn" type="button">清空缓存并刷新</button>
+                <button id="versionRefreshBtn" type="button">直接刷新</button>
+            </div>
         </div>
     </div>
     <div id="audioUnlockPrompt" class="audioUnlockPrompt" hidden>
@@ -57,8 +72,21 @@
                     <span id="nowRequester" class="requester"></span>
                 </div>
             </div>
-            <div class="progress">
-                <div class="progress_bar"><i class="dot"></i></div>
+            <section id="lyricsPanel" class="lyricsPanel" aria-live="off" hidden>
+                <div id="lyricsPrevious" class="lyricsLine lyricsPrevious"><span class="lyricsText"></span></div>
+                <div id="lyricsCurrent" class="lyricsLine lyricsCurrent"><span class="lyricsText"></span></div>
+                <div id="lyricsTranslation" class="lyricsTranslation" hidden><span class="lyricsText"></span></div>
+                <div id="lyricsNext" class="lyricsLine lyricsNext"><span class="lyricsText"></span></div>
+                <div id="lyricsStatus" class="lyricsStatus" hidden></div>
+            </section>
+            <div id="playbackProgress" class="playbackProgress">
+                <span id="currentTimeText" class="progressTime">00:00</span>
+                <div class="progressTrack">
+                    <div id="progressBuffered" class="progressBuffered"></div>
+                    <div id="progressPlayed" class="progressPlayed"></div>
+                    <input id="progressSlider" class="progressSlider" type="range" min="0" max="0" step="1000" value="0" disabled aria-label="歌曲播放进度">
+                </div>
+                <span id="durationText" class="progressTime">--:--</span>
             </div>
             <div class="playerActions">
                 <button id="unlockAudioBtn" class="primaryAction">启用声音</button>
@@ -236,7 +264,7 @@
                             </tr>
                             <tr>
                                 <td>参数说明</td>
-                                <td colspan="2">网址使用 <code>?roomid=房间号</code>；可追加 <code>&amp;token=弹幕token</code> 或 <code>&amp;debug=1</code></td>
+                                <td colspan="2">网址使用 <code>?roomid=房间号</code>；实时模式追加 <code>&amp;realtime=1</code>，诊断可再追加 <code>&amp;debug=1</code></td>
                             </tr>
                         </tbody>
                     </table>
@@ -262,6 +290,65 @@
                                 <td>背景模糊</td>
                                 <td><input id="overlayBlur" type="range" min="0" max="24" step="1"></td>
                                 <td><output id="overlayBlurValue"></output></td>
+                            </tr>
+                            <tr>
+                                <td>显示歌词</td>
+                                <td colspan="2"><label class="setting_check"><input id="lyricsEnabled" type="checkbox">显示歌词</label></td>
+                            </tr>
+                            <tr>
+                                <td>歌词翻译</td>
+                                <td colspan="2"><label class="setting_check"><input id="lyricsTranslation" type="checkbox">显示翻译</label></td>
+                            </tr>
+                            <tr>
+                                <td>歌词显示方式</td>
+                                <td>
+                                    <select id="lyricsDisplayMode">
+                                        <option value="wrap">自动换行</option>
+                                        <option value="scroll">单向滚动</option>
+                                    </select>
+                                </td>
+                                <td>默认自动换行，长歌词不会横向移动</td>
+                            </tr>
+                            <tr>
+                                <td>歌词偏移</td>
+                                <td><input id="lyricsOffsetMs" type="number" min="-5000" max="5000" step="50"></td>
+                                <td>毫秒</td>
+                            </tr>
+                            <tr>
+                                <td>歌词专用页字号</td>
+                                <td><input id="lyricsFontSize" type="number" min="12" max="64" step="1"></td>
+                                <td>像素（仅影响 lyric=true 页面）</td>
+                            </tr>
+                            <tr>
+                                <td>歌词颜色</td>
+                                <td><input id="lyricsColor" type="color" value="#ffffff"></td>
+                                <td>歌词面板和歌词专用页</td>
+                            </tr>
+                            <tr>
+                                <td>歌词透明度</td>
+                                <td><input id="lyricsOpacity" type="range" min="10" max="100" step="1"></td>
+                                <td><output id="lyricsOpacityValue"></output></td>
+                            </tr>
+                            <tr>
+                                <td>歌词专用页行数</td>
+                                <td>
+                                    <select id="lyricsOverlayLines">
+                                        <option value="0">只显示当前歌词</option>
+                                        <option value="1">前后各 1 行</option>
+                                        <option value="2">前后各 2 行</option>
+                                        <option value="3">前后各 3 行</option>
+                                    </select>
+                                </td>
+                                <td>仅影响 lyric=true 页面</td>
+                            </tr>
+                            <tr>
+                                <td>歌词专用页宽度</td>
+                                <td><input id="lyricsOverlayWidth" type="range" min="50" max="100" step="1"></td>
+                                <td><output id="lyricsOverlayWidthValue"></output>（仅影响 lyric=true 页面）</td>
+                            </tr>
+                            <tr>
+                                <td>允许拖动进度</td>
+                                <td colspan="2"><label class="setting_check"><input id="progressSeekEnabled" type="checkbox">允许控制页跳转</label></td>
                             </tr>
                             <tr>
                                 <td colspan="3" class="customCssCell">
@@ -330,10 +417,10 @@
                     <div class="setting_about_page">
                         <p><strong>Damuku_music</strong></p>
                         <p>为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐</p>
-                        <p>版本：v1.0.0</p>
+                        <p>版本：STA 0.1.2</p>
                         <hr>
-                        <p>开源地址：<a href="https://github.com/xiaoyulejia/Damuku_music" target="_blank">GitHub</a></p>
-                        <p>作者主页：<a href="https://github.com/xiaoyulejia" target="_blank">xiaoan.website</a></p>
+                        <p>开源地址：<a href="https://github.com/xiaoyulejia/Danmuku_music" target="_blank">GitHub</a></p>
+                        <p>作者主页：<a href="https://github.com/xiaoyulejia" target="_blank">小娱乐家</a></p>
                         <p>感谢项目：<a href="https://github.com/xiaoan-1/bilibili-ordersong-plugin" target="_blank">GitHub</a></p>
                         <hr>
                     </div>

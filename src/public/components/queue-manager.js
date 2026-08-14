@@ -1,4 +1,4 @@
-import musicPlayer from './music-player.js?v=20260812-4';
+import musicPlayer from './music-player.js?v=20260812-23';
 
 class QueueManager {
     constructor() {
@@ -114,6 +114,13 @@ class QueueManager {
                 move.disabled = disabled || this.busy;
                 item.appendChild(move);
             }
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'removeButton';
+            remove.dataset.action = 'remove';
+            remove.textContent = '删除';
+            remove.disabled = this.busy;
+            item.appendChild(remove);
             this.list.appendChild(item);
         });
         this.saveButton.disabled = this.busy || !this.isDraftDirty();
@@ -134,6 +141,7 @@ class QueueManager {
         if (button.dataset.action === 'promote') this.promote(id);
         if (button.dataset.action === 'up') this.moveDraft(id, -1);
         if (button.dataset.action === 'down') this.moveDraft(id, 1);
+        if (button.dataset.action === 'remove') this.remove(id);
     }
 
     startDrag(event) {
@@ -194,6 +202,29 @@ class QueueManager {
             return;
         }
         this.setStatus(response.result?.result?.moved === false ? '该歌曲已经是下一首' : '已设为下一首', 'success');
+    }
+
+    async remove(orderId) {
+        const order = this.orders.get(orderId);
+        if (!order || orderId === this.currentOrderId) return;
+        const songName = order.song?.sname || '这首歌曲';
+        if (!window.confirm(`确定删除待播歌曲“${songName}”吗？`)) return;
+        this.busy = true;
+        this.render(this.orders.get(this.currentOrderId));
+        this.setStatus('正在删除歌曲…', 'loading');
+        const response = await musicPlayer.sendCommand('removeOrder', {
+            orderId,
+            expectedQueueRevision: this.queueRevision,
+            expectedCurrentOrderId: this.currentOrderId
+        });
+        this.busy = false;
+        if (response?.state) musicPlayer.applySharedState(response.state);
+        if (!response?.ok) {
+            await this.refresh();
+            this.setStatus(response?.result?.result?.reason || '队列已变化，请重新选择', 'error');
+            return;
+        }
+        this.setStatus(response.result?.result?.removed === true ? '歌曲已删除' : '歌曲未删除', 'success');
     }
 
     async saveOrder() {

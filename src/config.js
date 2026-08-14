@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('yaml');
+const { BUILD_ID } = require('./build-info');
 
 function normalizeBasePath(value) {
     const text = String(value || '/order').trim();
@@ -28,7 +29,7 @@ function loadRuntimeConfig(rootDir = path.resolve(__dirname, '..')) {
     delete require.cache[require.resolve(apiPath)];
     const webapi = require(apiPath);
     const port = resolvePort(process.env.DAMUKU_PORT || config.web_server_port, 8000);
-    const buildId = process.env.DAMUKU_BUILD_ID || `${Date.now()}-${process.pid}`;
+    const buildId = process.env.DAMUKU_BUILD_ID || BUILD_ID;
     process.env.DAMUKU_BUILD_ID = buildId;
     return {
         rootDir,

@@ -32,6 +32,38 @@ body, html{
 
 .backendOfflineOverlay[hidden] { display: none; }
 
+.versionMismatchOverlay { z-index: 1100; }
+
+.versionMismatchCard { border-color: rgba(148, 137, 255, .48); }
+
+.versionMismatchCard p { margin-bottom: 12px; }
+
+.versionMismatchDetails {
+    display: grid;
+    gap: 4px;
+    margin: 0 0 18px;
+    color: #aeb1cc;
+    font-size: 11px;
+    text-align: left;
+}
+
+.versionMismatchDetails code {
+    color: #e8e6ff;
+    font-family: Consolas, monospace;
+}
+
+.versionMismatchActions {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.versionMismatchActions button:last-child {
+    color: #d8d7ff;
+    background: rgba(255, 255, 255, .1);
+}
+
 .backendOfflineCard {
     width: min(420px, 100%);
     padding: 26px 24px 22px;
@@ -205,6 +237,273 @@ h2 { font-size: 16px; }
     display: flex;
     flex-direction: column;
     gap: 4px;
+}
+
+.lyricsPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 78px;
+    margin-top: 18px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 255, 255, .1);
+    border-radius: 14px;
+    background: rgba(0, 0, 0, .16);
+    text-align: center;
+}
+
+.lyricsPanel[hidden] { display: none; }
+
+.lyricsLine,
+.lyricsTranslation,
+.lyricsStatus {
+    overflow: visible;
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.lyricsText {
+    display: block;
+    min-width: 0;
+    white-space: inherit;
+    overflow-wrap: inherit;
+    word-break: inherit;
+}
+
+.lyricsLine,
+.lyricsTranslation {
+    text-overflow: clip;
+}
+
+.lyricsMarquee {
+    text-align: left;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.lyricsMarquee .lyricsText {
+    min-width: max-content;
+    padding-inline-end: 12px;
+    animation: lyricsMarquee var(--lyrics-marquee-duration, 1s) linear 1 normal forwards;
+    animation-delay: var(--lyrics-marquee-delay, 0s);
+    animation-play-state: var(--lyrics-marquee-play-state, paused);
+    will-change: transform;
+}
+
+@keyframes lyricsMarquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(var(--lyrics-marquee-shift, 0px)); }
+}
+
+.lyricsPrevious,
+.lyricsNext {
+    color: #8f91ac;
+    font-size: 12px;
+}
+
+.lyricsCurrent {
+    color: #fff;
+    /* 监控/控制页保持固定字号；设置项只作用于 lyric=true 专用页。 */
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.35;
+}
+
+.lyricsTranslation {
+    color: #c6c7d9;
+    font-size: max(12px, calc(22px * .62));
+    line-height: 1.35;
+}
+
+.lyricsStatus {
+    color: #a9a9c8;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.playbackProgress {
+    --played-ratio: 0;
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) 42px;
+    align-items: center;
+    gap: 9px;
+    margin-top: 14px;
+}
+
+.progressTime {
+    color: #a9a9c8;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.progressTrack {
+    position: relative;
+    height: 16px;
+    display: flex;
+    align-items: center;
+}
+
+.progressTrack::before,
+.progressBuffered,
+.progressPlayed {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    border-radius: 99px;
+    pointer-events: none;
+}
+
+.progressTrack::before { content: ''; background: rgba(255, 255, 255, .16); }
+.progressBuffered { background: rgba(255, 255, 255, .18); transform: scaleX(0); transform-origin: left center; }
+.progressPlayed { background: linear-gradient(90deg, #887aff, #e27ab2); transform: scaleX(var(--played-ratio, 0)); transform-origin: left center; }
+
+.progressSlider {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    height: 16px;
+    margin: 0;
+    cursor: pointer;
+    opacity: 0;
+}
+
+.progressSlider:disabled { cursor: default; }
+
+.progressSlider:focus-visible { opacity: .45; outline: 1px solid #b8aeff; }
+
+body.overlayLight .lyricsPanel { border-color: rgba(74, 77, 112, .14); background: rgba(125, 129, 175, .08); }
+body.overlayLight .lyricsCurrent { color: #292a42; }
+body.overlayLight .lyricsPrevious,
+body.overlayLight .lyricsNext,
+body.overlayLight .lyricsStatus,
+body.overlayLight .progressTime { color: #777b9a; }
+body.overlayLight .lyricsTranslation { color: #686c88; }
+body.overlayLight .progressTrack::before { background: rgba(64, 68, 103, .16); }
+
+/* lyric=true：透明歌词专用页，适合作为 OBS 浏览器源叠加。 */
+body.lyricOverlay,
+body.lyricOverlay html {
+    background: transparent;
+}
+
+body.lyricOverlay .main {
+    width: var(--lyric-viewport-width, 100vw);
+    height: var(--lyric-viewport-height, 100vh);
+    margin: 0;
+}
+
+body.lyricOverlay .queueCard,
+body.lyricOverlay .setting,
+body.lyricOverlay .alertBox,
+body.lyricOverlay #audioUnlockPrompt,
+body.lyricOverlay #backendOfflineOverlay {
+    display: none !important;
+}
+
+body.lyricOverlay .playerCard {
+    display: block;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+}
+
+body.lyricOverlay .cardTitle,
+body.lyricOverlay .nowPlaying,
+body.lyricOverlay .playbackProgress,
+body.lyricOverlay .playerActions,
+body.lyricOverlay .volumeControl {
+    display: none !important;
+}
+
+body.lyricOverlay .lyricsPanel {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    width: var(--lyric-viewport-width, 100vw);
+    height: var(--lyric-viewport-height, 100vh);
+    max-width: none;
+    min-width: 0;
+    min-height: 0;
+    margin: 0;
+    padding: clamp(12px, 5vh, 42px) max(12px, calc((100% - var(--lyrics-overlay-width, 92%)) / 2));
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--lyrics-color, #fff);
+    opacity: var(--lyrics-opacity, 1);
+    text-shadow: 0 2px 8px rgb(0 0 0 / .75);
+    overflow: hidden;
+    text-align: center;
+}
+
+body.lyricOverlay .lyricsPanel > * {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+}
+
+body.lyricOverlay .lyricsPanel[hidden] { display: none; }
+
+body.lyricOverlay .lyricsPrevious,
+body.lyricOverlay .lyricsNext,
+body.lyricOverlay .lyricsStatus {
+    display: none;
+}
+
+body.lyricOverlay .lyricsCurrent,
+body.lyricOverlay .lyricsTranslation {
+    color: var(--lyrics-color, #fff);
+}
+
+body.lyricOverlay .lyricsCurrent {
+    font-size: clamp(18px, min(var(--lyrics-font-size, 22px), 7vw, 14vh), 64px);
+    line-height: 1.25;
+}
+
+body.lyricOverlay .lyricsTranslation {
+    font-size: clamp(12px, min(calc(var(--lyrics-font-size, 22px) * .62), 4vw, 8vh), 40px);
+    line-height: 1.25;
+}
+
+body.lyricOverlay .lyricsPrevious,
+body.lyricOverlay .lyricsNext {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+body.lyricOverlay .lyricsStackLine {
+    overflow: visible;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    color: var(--lyrics-color, #fff);
+    font-size: clamp(12px, min(calc(var(--lyrics-font-size, 22px) * .72), 4vw, 8vh), 44px);
+    line-height: 1.35;
+    opacity: .62;
+    text-overflow: clip;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+body.lyricOverlay .lyricsPrevious[hidden],
+body.lyricOverlay .lyricsNext[hidden] {
+    display: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .progressPlayed,
+    .lyricsMarquee .lyricsText { transition: none; animation: none; }
 }
 
 .nowLabel,

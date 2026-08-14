@@ -121,6 +121,14 @@
                 <button type="button" data-open="controlLink">打开</button>
             </span>
         </div>
+        <div class="link-card">
+            <strong>透明歌词页面</strong>
+            <a id="lyricLink" target="_blank" rel="noreferrer"></a>
+            <span class="actions">
+                <button type="button" class="secondary" data-copy="lyricLink">复制</button>
+                <button type="button" data-open="lyricLink">打开</button>
+            </span>
+        </div>
     </section>
 
     <footer>
@@ -146,6 +154,7 @@
     function renderLinks(roomId) {
         const obsUrl = buildUrl({ roomid: roomId, source: 'obs' });
         const controlUrl = buildUrl({ roomid: roomId, livemode: 'false', source: 'control' });
+        const lyricUrl = buildUrl({ roomid: roomId, source: 'obs', lyric: 'true' });
         const settingsBase = new URL(location.href);
         if (settingsBase.hostname === 'localhost') settingsBase.hostname = '127.0.0.1';
         const settingsUrl = new URL(`./settings.html?roomid=${encodeURIComponent(roomId)}`, settingsBase.href).href;
@@ -155,6 +164,9 @@
         obsLink.textContent = obsUrl;
         controlLink.href = controlUrl;
         controlLink.textContent = controlUrl;
+        const lyricLink = document.getElementById('lyricLink');
+        lyricLink.href = lyricUrl;
+        lyricLink.textContent = lyricUrl;
         document.getElementById('settingsLink').href = settingsUrl;
         links.hidden = false;
         history.replaceState(null, '', `?roomid=${encodeURIComponent(roomId)}`);

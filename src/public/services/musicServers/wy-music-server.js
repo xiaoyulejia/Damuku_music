@@ -1,4 +1,5 @@
 import publicMethod from "../../utils/common.js?v=20260812-5";
+import { mergeTranslation, parseLrc } from "../lyric-parser.mjs";
 
 class WyMusicServer {
 
@@ -271,6 +272,53 @@ class WyMusicServer {
             console.log("歌曲链接获取失败!", error.response?.data || error.message);
             return null;
         }
+    }
+
+    async getLyrics(songId, { signal } = {}) {
+        const request = async endpoint => {
+            const resp = await axios({
+                method: 'get',
+                url: this.baseUrl + endpoint,
+                timeout: 10000,
+                signal,
+                params: { cookie: this.cookie, id: songId }
+            });
+            const payload = resp.data || {};
+            if (payload.code !== 200) throw new Error(`歌词接口返回 ${payload.code ?? '未知状态'}`);
+            return payload;
+        };
+
+        let payload;
+        try {
+            payload = await request('/lyric/new');
+        } catch (error) {
+            if (error?.code === 'ERR_CANCELED' || error?.name === 'AbortError') throw error;
+            this.debugLog('新版歌词接口失败，回退旧接口', { songId, message: error.message });
+            try {
+                payload = await request('/lyric');
+            } catch (fallbackError) {
+                if (fallbackError?.code === 'ERR_CANCELED' || fallbackError?.name === 'AbortError') throw fallbackError;
+                throw fallbackError;
+            }
+        }
+
+        // NeteaseCloudMusicApi 的 /lyric 和 /lyric/new 将 lrc/tlyric
+        // 放在响应顶层；兼容部分代理额外包裹 data 的返回格式。
+        const data = payload.data || payload;
+        const original = data.lrc?.lyric || '';
+        const translation = data.tlyric?.lyric || '';
+        const romanization = data.romalrc?.lyric || '';
+        const noLyrics = Boolean(data.nolyric || data.uncollected || (!original && !translation));
+        return {
+            platform: 'wy',
+            songId: String(songId),
+            original,
+            translation,
+            romanization,
+            instrumental: Boolean(data.nolyric && !original),
+            noLyrics,
+            lines: noLyrics ? [] : mergeTranslation(parseLrc(original), translation)
+        };
     }
 
     /* 获取歌单列表 

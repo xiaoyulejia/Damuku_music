@@ -1,7 +1,7 @@
-import musicPlayer from "./music-player.js?v=20260812-4";
+import musicPlayer from "./music-player.js?v=20260812-23";
 import publicMethod from "../utils/common.js?v=20260810-41";
-import musicServer from "../services/musicServers/music-server.js?v=20260810-42";
-import danmuServer from "../services/danmuServers/danmu-server.js?v=20260810-25";
+import musicServer from "../services/musicServers/music-server.js?v=20260812-22";
+import danmuServer from "../services/danmuServers/danmu-server.js?v=20260813-1";
 
 /* 在此处启动弹幕服务 */
 class DanmuConfiger {
@@ -32,12 +32,17 @@ class DanmuConfiger {
     }
 
     // 启动弹幕链接
-    async startDanmu() {
-        // 先注册回调，避免连接建立后收到的第一条弹幕被遗漏
-        danmuServer.serverObj.danmuMessage = this.identifyDanmuCommand.bind(this);
+    async startDanmu({ processCommands = true } = {}) {
+        // 镜像页在 realtime=1&debug=1 下可以只观察实时弹幕，但不能重复触发点歌。
+        danmuServer.serverObj.danmuMessage = processCommands
+            ? this.identifyDanmuCommand.bind(this)
+            : null;
         // 连接弹幕服务器
         const connected = await danmuServer.serverObj.connect();
         if (!connected) return;
+        if (!processCommands) {
+            console.log('[BilibiliDanmu][WebSocket] 调试观察模式：实时弹幕只打印，不触发点歌');
+        }
         // 获取管理员ID
         this.adminId = Number(new URLSearchParams(window.location.search).get('uid') || danmuServer.serverObj.uid || 0);
     }
@@ -98,13 +103,13 @@ class DanmuConfiger {
             }
         } else if (danmuMsg == "暂停") {
             if (userDanmu.uid == this.adminId) {
-                musicPlayer.audio.pause();
+                musicPlayer.pausePlayback();
             } else {
                 publicMethod.pageAlert("您没有改权限进行该操作~");
             }
         } else if (danmuMsg == "播放") {
             if (userDanmu.uid == this.adminId) {
-                musicPlayer.audio.play();
+                musicPlayer.unlockPlayback();
             } else {
                 publicMethod.pageAlert("您没有改权限进行该操作~");
             }

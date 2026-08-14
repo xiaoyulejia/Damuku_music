@@ -532,6 +532,14 @@
     padding: 7px 8px !important;
 }
 
+.removeButton {
+    min-width: 54px !important;
+    padding: 7px 8px !important;
+    color: #ffd5d5 !important;
+    background: rgba(191, 78, 91, .22) !important;
+    border-color: rgba(255, 130, 142, .35) !important;
+}
+
 .queueManagerActions {
     display: flex;
     flex-wrap: wrap;
