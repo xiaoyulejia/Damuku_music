@@ -18,6 +18,12 @@ body, html{
     font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
+/* OBS 浏览器源是固定视口，不应把页面本身变成可滚动文档。 */
+html.liveMode,
+body.liveMode {
+    overflow: hidden;
+}
+
 .backendOfflineOverlay {
     position: fixed;
     inset: 0;
@@ -631,6 +637,10 @@ body.liveMode .volumeControl {
 }
 
 /* OBS 直播画面固定只展示点歌队列，不受浏览器本地显示开关影响。 */
+body.liveMode .main {
+    height: calc(100% - 24px);
+}
+
 body.liveMode .playerCard {
     display: none !important;
 }

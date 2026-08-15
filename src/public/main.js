@@ -19,6 +19,9 @@ async function initializeMainPage() {
     // source=obs 页面即使因为已有播放端而降级为监控，也保持 OBS 的纯列表布局。
     const obsDisplayMode = !settingsOnly && !lyricOnlyMode && !['monitor', 'control', 'preview'].includes(pageRole) && requestedLiveMode;
     let liveMode = obsDisplayMode;
+    // 在异步读取共享设置前先锁定 OBS 根文档，避免首屏短暂出现浏览器滚动条。
+    document.documentElement.classList.toggle('liveMode', liveMode);
+    document.body.classList.toggle('liveMode', liveMode);
     let serverDisplaySettings = null;
     let settingsRevision = 0;
     let settingsGlobalRevision = 0;
@@ -245,6 +248,7 @@ async function initializeMainPage() {
         document.documentElement.style.setProperty('--lyrics-color', String(value('lyricsColor', '#ffffff')));
         document.documentElement.style.setProperty('--lyrics-opacity', String(Math.max(.1, Math.min(1, Number(value('lyricsOpacity', 100)) / 100))));
         document.documentElement.style.setProperty('--lyrics-overlay-width', `${Math.max(50, Math.min(100, Number(value('lyricsOverlayWidth', 92))))}%`);
+        document.documentElement.classList.toggle('liveMode', liveMode);
         document.body.classList.toggle('liveMode', liveMode);
         document.body.classList.toggle('lyricOverlay', lyricOnlyMode);
         document.body.classList.toggle('liveShowPlayer', liveMode && liveShowPlayer);
