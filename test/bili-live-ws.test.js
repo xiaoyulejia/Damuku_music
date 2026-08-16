@@ -47,13 +47,13 @@ test('prints an explicit WebSocket realtime danmu log only in debug mode', () =>
     assert.ok(realtimeLog > debugGuard && callback > realtimeLog);
 });
 
-test('allows realtime debug observation on mirror pages without processing commands', () => {
+test('allows debug observation on mirror pages without processing commands', () => {
     const mainSource = fs.readFileSync(path.join(__dirname, '../src/public/main.js'), 'utf8');
     const configSource = fs.readFileSync(
         path.join(__dirname, '../src/public/components/danmu-configer.js'),
         'utf8'
     );
-    assert.match(mainSource, /realtimeDebugObserver/);
+    assert.match(mainSource, /debugObserver/);
     assert.match(mainSource, /startDanmu\(\{ processCommands: false \}\)/);
     assert.match(configSource, /processCommands\s*\?\s*this\.identifyDanmuCommand\.bind\(this\)\s*:\s*null/);
 });

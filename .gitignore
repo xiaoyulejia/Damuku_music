@@ -5,6 +5,7 @@
 /config/config.yaml
 /config/webapi.js
 /src/public/webapi.js
+/src/public/version.js
 /logs
 /cache
 /data

@@ -33,7 +33,7 @@ class DanmuConfiger {
 
     // 启动弹幕链接
     async startDanmu({ processCommands = true } = {}) {
-        // 镜像页在 realtime=1&debug=1 下可以只观察实时弹幕，但不能重复触发点歌。
+        // 镜像页在 debug=1 下可以只观察历史/实时弹幕，但不能重复触发点歌。
         danmuServer.serverObj.danmuMessage = processCommands
             ? this.identifyDanmuCommand.bind(this)
             : null;
@@ -41,7 +41,8 @@ class DanmuConfiger {
         const connected = await danmuServer.serverObj.connect();
         if (!connected) return;
         if (!processCommands) {
-            console.log('[BilibiliDanmu][WebSocket] 调试观察模式：实时弹幕只打印，不触发点歌');
+            const mode = danmuServer.serverObj.historyOnly ? '历史弹幕轮询' : '实时弹幕';
+            console.log(`[BilibiliDanmu] 调试观察模式：${mode}只打印，不触发点歌`);
         }
         // 获取管理员ID
         this.adminId = Number(new URLSearchParams(window.location.search).get('uid') || danmuServer.serverObj.uid || 0);

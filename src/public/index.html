@@ -6,13 +6,15 @@
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Damuku_music</title>
+    <!-- DEV/STA 产品版本与前端构建号由 config/version.js 生成到 version.js。 -->
+    <script src="./version.js?v=20260816-1"></script>
     <!-- 库文件 -->
     <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <script src="https://cdn.bootcdn.net/ajax/libs/pako/2.0.3/pako.min.js"></script>
     <!-- 配置文件 -->
     <script src="./webapi.js"></script>
     <!-- main -->
-    <script type="module" src="./main.js?v=20260815-2"></script>
+    <script type="module" src="./main.js?v=20260816-1"></script>
     <!-- 总体样式文件 -->
     <link rel="stylesheet" href="./styles/main-page.css?v=20260815-3">
     <!-- 点歌面板样式 -->
@@ -462,7 +464,8 @@
                     <div class="setting_about_page">
                         <p><strong>Damuku_music</strong></p>
                         <p>为B站直播间提供观众弹幕点歌功能，支持网易云音乐、QQ音乐</p>
-                        <p>版本：DEV 0.1.3_fix1</p>
+                        <p>版本：<span data-damuku-product-version>未知</span></p>
+                        <p>前端构建：<span data-damuku-build-id>未知</span></p>
                         <hr>
                         <p>开源地址：<a href="https://github.com/xiaoyulejia/Danmuku_music" target="_blank">GitHub</a></p>
                         <p>作者主页：<a href="https://github.com/xiaoyulejia" target="_blank">小娱乐家</a></p>

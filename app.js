@@ -30,16 +30,44 @@ process.env.DAMUKU_BUILD_ID = runtime.buildId;
 const localStore = new LocalStore(__dirname);
 // ==================== 配置文件初始化 ====================
 // 如果运行时配置不存在，则从 default 目录拷贝
-if (!fs.existsSync('config/config.yaml')) {
-    fs.copyFileSync(path.join(__dirname, 'config/default/config.yaml'), path.join(__dirname, 'config/config.yaml'));
+const runtimeConfigPath = path.join(__dirname, 'config/config.yaml');
+const runtimeWebapiPath = path.join(__dirname, 'config/webapi.js');
+const runtimeVersionPath = path.join(__dirname, 'config/version.js');
+if (!fs.existsSync(runtimeConfigPath)) {
+    fs.copyFileSync(path.join(__dirname, 'config/default/config.yaml'), runtimeConfigPath);
     console.log('已从默认配置创建 config/config.yaml');
 }
-if (!fs.existsSync('config/webapi.js')) {
-    fs.copyFileSync(path.join(__dirname, 'config/default/webapi.js'), path.join(__dirname, 'config/webapi.js'));
+if (!fs.existsSync(runtimeWebapiPath)) {
+    fs.copyFileSync(path.join(__dirname, 'config/default/webapi.js'), runtimeWebapiPath);
     console.log('已从默认配置创建 config/webapi.js');
 }
-// 将 webapi.js 拷贝到 public 目录供前端使用
-fs.copyFileSync(path.join(__dirname, 'config/webapi.js'), path.join(__dirname, 'src/public/webapi.js'));
+if (!fs.existsSync(runtimeVersionPath)) {
+    fs.copyFileSync(path.join(__dirname, 'config/default/version.js'), runtimeVersionPath);
+    console.log('已从默认配置创建 config/version.js');
+}
+// 将运行时配置拷贝到 public 目录供浏览器使用。
+fs.copyFileSync(runtimeWebapiPath, path.join(__dirname, 'src/public/webapi.js'));
+const versionForBrowser = require(runtimeVersionPath);
+const publicVersionScript = `(() => {
+    const DAMUKU_VERSION = ${JSON.stringify(versionForBrowser)};
+    window.__DAMUKU_PRODUCT_VERSION = DAMUKU_VERSION.productVersion;
+    window.__DAMUKU_FRONTEND_BUILD_ID = DAMUKU_VERSION.buildId;
+    const renderVersion = () => {
+        document.querySelectorAll('[data-damuku-product-version]').forEach(element => {
+            element.textContent = DAMUKU_VERSION.productVersion;
+        });
+        document.querySelectorAll('[data-damuku-build-id]').forEach(element => {
+            element.textContent = DAMUKU_VERSION.buildId;
+        });
+    };
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', renderVersion, { once: true });
+    } else {
+        renderVersion();
+    }
+})();
+`;
+fs.writeFileSync(path.join(__dirname, 'src/public/version.js'), publicVersionScript, 'utf8');
 
 // 读取服务端配置
 const config = runtime.config;

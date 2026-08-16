@@ -38,6 +38,10 @@ http://localhost:8000/order/launcher.html
 
 在启动器输入 B 站直播间号，点击“生成链接”，然后按下面方式使用：
 
+启动器还可以选择生成 1～3 个独立多场景链接，默认生成 1 个；链接会依次使用 `scene-a`、`scene-b`、`scene-c` 实例名，并在启动器页面显示当前产品版本和前端构建号。
+
+版本配置统一写在 `config/version.js`：`productVersion` 是产品版本（例如 `DEV 0.1.3_fix2`），`buildId` 是前后端构建号。修改后重启服务即可同步到启动页、关于页和版本校验。
+
 | 链接 | 用途 |
 | --- | --- |
 | `?roomid=房间号&source=obs` | OBS 或直播姬浏览器源，唯一实际播放端 |
@@ -52,6 +56,14 @@ OBS:     http://127.0.0.1:8000/order/?roomid=4646297&source=obs
 控制页:  http://127.0.0.1:8000/order/?roomid=4646297&livemode=false&source=control
 歌词页:  http://127.0.0.1:8000/order/?roomid=4646297&source=obs&lyric=true
 设置页:  http://127.0.0.1:8000/order/settings.html?roomid=4646297
+```
+
+独立多场景链接示例：
+
+```text
+场景 A: http://127.0.0.1:8000/order/?roomid=4646297&source=obs&handoff=scene&instance=scene-a
+场景 B: http://127.0.0.1:8000/order/?roomid=4646297&source=obs&handoff=scene&instance=scene-b
+场景 C: http://127.0.0.1:8000/order/?roomid=4646297&source=obs&handoff=scene&instance=scene-c
 ```
 
 OBS 页面负责真正播放音频；控制页不会创建第二个播放器。一个房间只允许一个播放端租约，重复打开 OBS 链接时，后打开的页面会自动降级为监控页。
@@ -120,6 +132,9 @@ http://127.0.0.1:8000/order/?roomid=4646297&source=obs&realtime=1&debug=1
 
 # 控制页
 http://127.0.0.1:8000/order/?roomid=4646297&livemode=false&source=control
+
+# 控制页只读观察历史弹幕轮询，不重复触发点歌
+http://127.0.0.1:8000/order/?roomid=4646297&livemode=false&source=control&debug=1
 
 # 控制页只读观察实时弹幕，不重复触发点歌
 http://127.0.0.1:8000/order/?roomid=4646297&livemode=false&source=control&realtime=1&debug=1

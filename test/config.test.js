@@ -25,6 +25,13 @@ test('runtime config gives DAMUKU_PORT precedence over YAML', () => {
     }
 });
 
+test('loads product and build versions from the shared version config', () => {
+    const configured = require('../config/version');
+    const runtime = loadRuntimeConfig(process.cwd());
+    assert.strictEqual(runtime.productVersion, configured.productVersion);
+    assert.strictEqual(runtime.buildId, configured.buildId);
+});
+
 test('rejects invalid ports before listen()', () => {
     for (const value of [0, 65536, 'abc', 1.5]) {
         assert.throws(() => resolvePort(value), /1-65535/);

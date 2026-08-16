@@ -1,4 +1,9 @@
-// 前后端必须使用同一个构建标识。发布代码后递增此值，页面会在健康检查时校验。
-const BUILD_ID = '20260815-3';
+// 兼容旧的 require('./build-info') 调用；实际版本统一由 config/version.js 提供。
+const path = require('path');
+const fs = require('fs');
+const defaultPath = path.join(__dirname, '..', 'config', 'default', 'version.js');
+const runtimePath = path.join(__dirname, '..', 'config', 'version.js');
+const version = require(fs.existsSync(runtimePath) ? runtimePath : defaultPath);
+const BUILD_ID = version.buildId;
 
-module.exports = { BUILD_ID };
+module.exports = { BUILD_ID, PRODUCT_VERSION: version.productVersion };

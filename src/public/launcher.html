@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>点歌台启动器</title>
+    <script src="./version.js?v=20260816-1"></script>
     <style>
         :root {
             color-scheme: dark;
@@ -39,7 +40,7 @@
         p { color: #bcb8d0; line-height: 1.7; }
 
         .room-form { display: flex; gap: 12px; margin: 28px 0 12px; }
-        input, button {
+        input, select, button {
             min-height: 46px;
             border: 1px solid rgba(255, 255, 255, .16);
             border-radius: 10px;
@@ -51,6 +52,12 @@
             padding: 0 14px;
             color: #fff;
             background: rgba(255, 255, 255, .08);
+        }
+        select {
+            min-width: 130px;
+            padding: 0 12px;
+            color: #fff;
+            background: #302d46;
         }
         button {
             padding: 0 18px;
@@ -82,12 +89,34 @@
         }
         .actions { display: flex; gap: 8px; }
         .actions button { min-height: 38px; padding: 0 12px; font-size: 14px; }
+        .scene-options {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0 0 12px;
+            color: #bcb8d0;
+            font-size: 14px;
+        }
+        .scene-links { margin-top: 14px; }
+        .scene-heading { margin: 0; color: #bcb8d0; font-size: 14px; }
+        .scene-link-list { display: grid; gap: 14px; margin-top: 10px; }
+        .version-info {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 16px;
+            margin-top: 18px;
+            color: #8d899f;
+            font-size: 12px;
+        }
+        .version-info strong { color: #d8d1ff; font-weight: 600; }
         footer { margin-top: 26px; color: #8d899f; font-size: 13px; }
         footer a { color: #b9d6ff; }
 
         @media (max-width: 640px) {
             .room-form, .link-card { display: flex; flex-wrap: wrap; }
             .room-form input { flex-basis: 100%; }
+            .scene-options { align-items: stretch; flex-direction: column; }
+            .scene-options select { width: 100%; }
             .link-card strong { flex: 0 0 100%; }
             .link-card a { flex: 1 1 220px; }
         }
@@ -102,6 +131,14 @@
         <input id="roomId" name="roomid" inputmode="numeric" autocomplete="off" placeholder="例如：4646297" aria-label="B站直播间号">
         <button type="submit">生成链接</button>
     </form>
+    <div class="scene-options">
+        <label for="sceneCount">生成多场景链接</label>
+        <select id="sceneCount" aria-label="生成多场景链接数量">
+            <option value="1" selected>1 个场景（scene-a）</option>
+            <option value="2">2 个场景（scene-a ～ scene-b）</option>
+            <option value="3">3 个场景（scene-a ～ scene-c）</option>
+        </select>
+    </div>
     <p id="error" role="alert"></p>
 
     <section id="links" class="links" hidden>
@@ -131,6 +168,16 @@
         </div>
     </section>
 
+    <section id="sceneLinks" class="scene-links" hidden>
+        <p class="scene-heading">多场景 OBS 播放链接（需在设置中启用多场景交接）</p>
+        <div id="sceneLinkList" class="scene-link-list"></div>
+    </section>
+
+    <div class="version-info" aria-label="版本信息">
+        <span>版本：<strong id="productVersion">未知</strong></span>
+        <span>前端构建：<strong id="frontendBuildId">未知</strong></span>
+        <span>服务构建：<strong id="serverBuildId">未提供</strong></span>
+    </div>
     <footer>
         设置页面：<a id="settingsLink" target="_blank" rel="noreferrer">打开设置</a>
         · OBS 页面负责播放，控制页面负责切歌、歌单和声音控制。
@@ -141,14 +188,68 @@
     const roomInput = document.getElementById('roomId');
     const error = document.getElementById('error');
     const links = document.getElementById('links');
+    const sceneCountInput = document.getElementById('sceneCount');
+    const sceneLinks = document.getElementById('sceneLinks');
+    const sceneLinkList = document.getElementById('sceneLinkList');
     const initialRoom = new URLSearchParams(location.search).get('roomid')
         || new URLSearchParams(location.search).get('room_id');
+    const launchParams = new URLSearchParams(location.search);
+
+    document.getElementById('productVersion').textContent = window.__DAMUKU_PRODUCT_VERSION || '未知';
+    document.getElementById('frontendBuildId').textContent = window.__DAMUKU_FRONTEND_BUILD_ID || '未知';
+    document.getElementById('serverBuildId').textContent = launchParams.get('server_version') || '未提供';
 
     function buildUrl(query) {
         const base = new URL(location.href);
         // 直播姬部分版本对 localhost 的回环解析不稳定，127.0.0.1 更可靠。
         if (base.hostname === 'localhost') base.hostname = '127.0.0.1';
         return new URL(`./?${new URLSearchParams(query).toString()}`, base.href).href;
+    }
+
+    function createLinkCard(label, id, url) {
+        const card = document.createElement('div');
+        card.className = 'link-card';
+        const title = document.createElement('strong');
+        title.textContent = label;
+        const link = document.createElement('a');
+        link.id = id;
+        link.href = url;
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        link.textContent = url;
+        const actions = document.createElement('span');
+        actions.className = 'actions';
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'secondary';
+        copy.dataset.copy = id;
+        copy.textContent = '复制';
+        const open = document.createElement('button');
+        open.type = 'button';
+        open.dataset.open = id;
+        open.textContent = '打开';
+        actions.append(copy, open);
+        card.append(title, link, actions);
+        return card;
+    }
+
+    function renderSceneLinks(roomId, count) {
+        sceneLinkList.replaceChildren();
+        for (let index = 0; index < count; index += 1) {
+            const sceneName = `scene-${String.fromCharCode(97 + index)}`;
+            const sceneUrl = buildUrl({
+                roomid: roomId,
+                source: 'obs',
+                handoff: 'scene',
+                instance: sceneName
+            });
+            sceneLinkList.appendChild(createLinkCard(
+                `OBS 场景 ${sceneName.slice(-1).toUpperCase()}`,
+                `sceneLink${sceneName.slice(-1).toUpperCase()}`,
+                sceneUrl
+            ));
+        }
+        sceneLinks.hidden = false;
     }
 
     function renderLinks(roomId) {
@@ -167,6 +268,7 @@
         const lyricLink = document.getElementById('lyricLink');
         lyricLink.href = lyricUrl;
         lyricLink.textContent = lyricUrl;
+        renderSceneLinks(roomId, Math.min(3, Math.max(1, Number(sceneCountInput.value) || 1)));
         document.getElementById('settingsLink').href = settingsUrl;
         links.hidden = false;
         history.replaceState(null, '', `?roomid=${encodeURIComponent(roomId)}`);
@@ -178,11 +280,19 @@
         if (!/^[1-9]\d*$/.test(roomId)) {
             error.textContent = '请输入有效的 B 站直播间号（只填写数字）。';
             links.hidden = true;
+            sceneLinks.hidden = true;
             roomInput.focus();
             return;
         }
         error.textContent = '';
         renderLinks(roomId);
+    });
+
+    sceneCountInput.addEventListener('change', () => {
+        const roomId = roomInput.value.trim();
+        if (/^[1-9]\d*$/.test(roomId) && !links.hidden) {
+            renderSceneLinks(roomId, Math.min(3, Math.max(1, Number(sceneCountInput.value) || 1)));
+        }
     });
 
     document.addEventListener('click', async event => {
