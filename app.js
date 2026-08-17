@@ -119,9 +119,10 @@ if (isMountPath(webapiConfig.bili_api)) {
 
 // 网易云音乐 API
 if (isMountPath(webapiConfig.netease_api)) {
-    const NeteaseCloudMusicApi = require('NeteaseCloudMusicApi');
+    const NeteaseCloudMusicApi = require('./src/services/netease-api');
     const neteasePath = webapiConfig.netease_api || '/netease_api';
     app.use(BASE_PATH + neteasePath, async (req, res) => {
+        const startedAt = Date.now();
         try {
             let apiPath = req.path.replace(/^\//, '').replace(/\//g, '_');
             const apiFunc = NeteaseCloudMusicApi[apiPath];
@@ -130,12 +131,33 @@ if (isMountPath(webapiConfig.netease_api)) {
             }
             const query = { ...req.query, ...req.body };
             if (!query.cookie) query.cookie = localStore.getNeteaseCookie();
+            const requestLog = {
+                api: apiPath,
+                hasCookie: Boolean(query.cookie),
+                params: Object.keys(query).filter(key => key !== 'cookie')
+            };
+            if (query.keywords) requestLog.keywords = String(query.keywords).slice(0, 80);
+            if (query.id) requestLog.id = String(query.id);
+            console.log('[Netease][request]', requestLog);
             const result = await apiFunc(query);
+            console.log('[Netease][response]', {
+                api: apiPath,
+                status: result.status,
+                code: result.body?.code,
+                message: result.body?.message || result.body?.msg || '',
+                elapsedMs: Date.now() - startedAt
+            });
             res.status(result.status).json(result.body);
         } catch (error) {
-            console.error('网易云API调用失败:', error);
             const status = Number(error?.status || error?.response?.status) || 502;
             const detail = error?.body || error?.response?.data || error?.message || String(error);
+            console.error('[Netease][error]', {
+                api: req.path,
+                status,
+                detail,
+                message: error?.message || String(error),
+                elapsedMs: Date.now() - startedAt
+            });
             res.status(status).json({
                 code: -1,
                 message: '网易云接口请求失败',

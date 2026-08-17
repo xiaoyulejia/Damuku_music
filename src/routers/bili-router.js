@@ -30,6 +30,7 @@ const sharedCandidates = new Map();
 const sharedRoomLocks = new Map();
 const sharedAutoSwitchStates = new Map();
 const sharedAutoSwitchInFlight = new Map();
+const historyDiagnostics = new Map();
 const localStore = new LocalStore(path.resolve(__dirname, '../..'));
 let sharedOrderCommandSeq = 0;
 // OBS 最小化后，内置 Chromium 可能把页面定时器延迟数秒甚至更久。
@@ -1755,6 +1756,21 @@ router.post('/live/sync-command', (req, res) => {
     if (applied.result.accepted !== false) {
         applied.result.delivery = publisherOnline ? 'queued' : 'pending';
     }
+    if (nextCommand.command === 'addOrder') {
+        const order = nextCommand.value || {};
+        console.log('[OrderSong][addOrder]', {
+            roomId,
+            uid: order.uid || 0,
+            uname: order.uname || '',
+            song: order.song?.sname || '',
+            sid: order.song?.sid || '',
+            accepted: applied.result.accepted !== false,
+            reason: applied.result.reason || '',
+            delivery: applied.result.delivery || '',
+            queueLength: canonicalState.queue?.length || 0,
+            currentSong: canonicalState.currentSong?.sname || ''
+        });
+    }
     // 命令日志只保留最小执行摘要，完整 idleSongList/currentSong 只存在状态文件。
     const logEntry = {
         sequence: nextCommand.sequence,
@@ -1836,6 +1852,22 @@ router.get('/live/danmu-history', async (req, res) => {
     if (!Number.isInteger(roomId) || roomId <= 0) return res.status(400).json({ code: -1, message: 'room_id必须是正整数' });
     try {
         const history = await getBiliSession().getHistory(roomId);
+        const items = Array.isArray(history.raw?.data?.room) ? history.raw.data.room : [];
+        const signature = items.map(item => item.id_str || [item.uid, item.timeline, item.text].join('|')).join('||');
+        const previous = historyDiagnostics.get(roomId);
+        if (!previous || previous.signature !== signature) {
+            historyDiagnostics.set(roomId, { signature, loggedAt: Date.now() });
+            console.log('[BilibiliDanmu][history] 历史10条模式更新', {
+                roomId,
+                resolvedRoomId: history.roomId,
+                count: items.length,
+                messages: items.map(item => ({
+                    uid: item.uid || item.user?.uid || 0,
+                    uname: item.user?.base?.name || item.uname || item.nickname || '用户',
+                    danmu: item.text || ''
+                }))
+            });
+        }
         res.json({
             ...history.raw,
             data: { ...history.raw.data, _room_id: history.roomId }

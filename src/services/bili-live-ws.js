@@ -310,11 +310,24 @@ class RoomConnection {
         if (this.disposed) throw new Error('room connection is closed');
         clearTimeout(this.idleTimer);
         this.idleTimer = null;
-        this.subscribers.set(socket, { debug: Boolean(options.debug) });
+        const debug = Boolean(options.debug);
+        this.subscribers.set(socket, { debug });
+        if (debug) {
+            console.log('[BilibiliDanmu][realtime] 已订阅实时模式', {
+                roomId: this.roomId,
+                connectionId: this.connectionId || null,
+                subscribers: this.subscribers.size
+            });
+        }
         this.send(socket, {
             type: 'status',
             status: 'room subscribed',
-            detail: { roomId: this.roomId, state: this.state, connectionId: this.connectionId }
+            detail: {
+                roomId: this.roomId,
+                state: this.state,
+                connectionId: this.connectionId,
+                mode: 'realtime-websocket'
+            }
         });
         if (this.state === 'IDLE' || this.state === 'BACKOFF') this.start();
     }
@@ -499,6 +512,12 @@ class RoomConnection {
         if (!event) return;
         this.metrics.danmuDecodedCount++;
         this.metrics.lastDanmuAt = Date.now();
+        this.debugLog('收到实时弹幕', {
+            uid: event.uid,
+            uname: event.uname,
+            danmu: event.danmu,
+            messageId: event.messageId
+        });
         this.publishEvent(event);
     }
 
@@ -638,6 +657,7 @@ class RoomConnection {
         return {
             ...this.metrics,
             state: this.state,
+            mode: 'realtime-websocket',
             subscribers: this.subscribers.size,
             commandCountByType: { ...this.metrics.commandCountByType }
         };
@@ -784,7 +804,10 @@ function attachLiveProxy(server, basePath, biliPath, options = {}) {
             return;
         }
         wss.handleUpgrade(request, socket, head, browserSocket => {
-            hub.subscribe(roomId, browserSocket, { debug: Boolean(url.searchParams.get('debug')) });
+            const debug = ['1', 'true', 'yes', 'on'].includes(
+                String(url.searchParams.get('debug') || '').toLowerCase()
+            );
+            hub.subscribe(roomId, browserSocket, { debug });
         });
     });
     server.once('close', () => {
