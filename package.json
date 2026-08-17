@@ -10,18 +10,29 @@
     "stop": "pm2 stop Damuku_music",
     "restart": "pm2 restart Damuku_music",
     "log": "pm2 log Damuku_music",
-    "test": "node --test"
+    "test": "node --test",
+    "typecheck:server": "tsc -p tsconfig.server.json",
+    "typecheck:client": "tsc -p tsconfig.client.json",
+    "typecheck": "npm run typecheck:server && npm run typecheck:client",
+    "build:server": "node scripts/build-server.cjs",
+    "build:client": "node scripts/build-client.cjs",
+    "build": "npm run clean && npm run build:server && npm run build:client",
+    "clean": "node scripts/clean.cjs"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "NeteaseCloudMusicApi": "^4.32.0",
     "axios": "^1.6.8",
     "express": "^5.1.0",
-    "yaml": "^2.8.1",
-    "ws": "^8.21.0"
+    "NeteaseCloudMusicApi": "^4.32.0",
+    "ws": "^8.21.0",
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
-    "pm2": "^7.0.1"
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.2.0",
+    "@types/ws": "^8.18.1",
+    "pm2": "^7.0.1",
+    "typescript": "^7.0.2"
   }
 }

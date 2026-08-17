@@ -1,3 +1,6 @@
+// 迁移兼容层：开发环境仍由原生 ESM 直接加载此文件；npm run build:client
+// 会用 lyric-parser.ts 的编译结果覆盖 dist/public/services/lyric-parser.mjs。
+
 function toFiniteNumber(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
